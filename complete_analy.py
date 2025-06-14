@@ -481,7 +481,7 @@ Data Summary:
 # Part 5: Main Analysis Function
 # ============================================================================
 
-def run_complete_covariance_analysis(csv_file_path='GRT_LBA.csv', subject_id=None, max_trials=400):
+def run_complete_covariance_analysis(csv_file_path='GRT_LBA.csv', subject_id=None, max_trials=400, draws=None, tune=None, chains=2):
     """
     Run complete covariance matrix analysis
     """
@@ -520,14 +520,33 @@ def run_complete_covariance_analysis(csv_file_path='GRT_LBA.csv', subject_id=Non
         model = build_covariance_lba_model(subject_data)
         
         # 4. MCMC sampling
-        print("\n⏳ Starting MCMC sampling...")
-        print("Sampling parameters: 400 draws + 200 tune, 2 chains")
+        # Auto-adjust sampling parameters based on number of trials
+        if draws is None:
+            if len(subject_data) <= 200:
+                draws = 300
+                tune_param = 150
+            elif len(subject_data) <= 400:
+                draws = 400
+                tune_param = 200
+            elif len(subject_data) <= 600:
+                draws = 600
+                tune_param = 300
+            else:  # > 600 trials
+                draws = 800
+                tune_param = 400
+        else:
+            draws = draws
+            tune_param = tune if tune is not None else draws // 2
+        
+        print(f"\n⏳ Starting MCMC sampling...")
+        print(f"Sampling parameters: {draws} draws + {tune_param} tune, {chains} chains")
+        print(f"Auto-adjusted based on {len(subject_data)} trials")
         
         with model:
             trace = pm.sample(
-                draws=400,
-                tune=200,
-                chains=2,
+                draws=draws,
+                tune=tune_param,
+                chains=chains,
                 cores=1,
                 target_accept=0.85,
                 return_inferencedata=True,
@@ -608,17 +627,25 @@ Usage Examples:
 1. Basic execution:
    trace, data, results = run_complete_covariance_analysis()
 
-2. Specify parameters:
+2. Specify parameters with custom sampling:
    trace, data, results = run_complete_covariance_analysis(
        csv_file_path='your_file.csv',
-       subject_id=41,
-       max_trials=300
+       subject_id=31,
+       max_trials=800,
+       draws=800,
+       tune=400,
+       chains=2
    )
 
 3. Quick test with simulated data:
    trace, data, results = quick_test()
 
-4. For more robust analysis with more samples:
-   # Modify sampling parameters in run_complete_covariance_analysis
-   # draws=800, tune=400, chains=4
+4. High-quality analysis with more samples:
+   trace, data, results = run_complete_covariance_analysis(
+       subject_id=41,
+       max_trials=600,
+       draws=1000,
+       tune=500,
+       chains=4
+   )
 """
