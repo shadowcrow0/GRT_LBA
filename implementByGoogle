@@ -1,0 +1,144 @@
+# ------------------------------------------------------------------
+# 1. Import necessary libraries
+# ------------------------------------------------------------------
+import pymc as pm
+import pandas as pd
+import numpy as np
+import arviz as az
+import pytensor.tensor as pt
+import matplotlib.pyplot as plt
+
+# ------------------------------------------------------------------
+# 2. Numerically Stable LBA Log-Likelihood Function
+# ------------------------------------------------------------------
+def lba_loglike(rt, choice, v, b, A, tau, s=0.1):
+    """
+    Numerically stable LBA log-likelihood function.
+    """
+    epsilon = 1e-8
+    n_choices = 2
+    
+    v_col = v.T
+
+    rt = rt - tau
+    rt = pt.clip(rt, epsilon, np.inf)
+
+    mu_v = v_col * rt
+    
+    B_upper = pt.clip(b, A + epsilon, np.inf)
+
+    term1 = (B_upper - A - mu_v) / s
+    term2 = (B_upper - mu_v) / s
+
+    logp_norm_term1 = pm.logp(pm.Normal.dist(0, 1), term1)
+    pdf_term1 = pt.exp(logp_norm_term1)
+    cdf_term1 = pm.logcdf(pm.Normal.dist(0,1), term1)
+
+    logp_norm_term2 = pm.logp(pm.Normal.dist(0, 1), term2)
+    pdf_term2 = pt.exp(logp_norm_term2)
+    cdf_term2 = pm.logcdf(pm.Normal.dist(0,1), term2)
+    
+    single_lk = (v_col * (pt.exp(cdf_term1) - pt.exp(cdf_term2))) + (s * (pdf_term2 - pdf_term1))
+    
+    single_lk_clipped = pt.clip(single_lk, epsilon, 1.0)
+    
+    denom_logp = pm.logcdf(pm.Normal.dist(0, 1), (B_upper - mu_v) / s)
+    
+    logp_chosen = pt.log(single_lk_clipped)
+
+    # CORRECTED: Replaced boolean indexing with a compatible alternative.
+    total_logp = 0
+    # Pre-calculate the sum of log-probabilities across all accumulators for each trial.
+    total_denom_logp = pt.sum(denom_logp, axis=0)
+    for k in range(n_choices):
+        mask = pt.eq(choice, k)
+        # The sum for "other" accumulators is the total minus the current one.
+        other_logp_sum = total_denom_logp - denom_logp[k]
+        total_logp += (logp_chosen[k] + other_logp_sum) * mask
+        
+    return pt.sum(total_logp - pt.log(A))
+
+# ------------------------------------------------------------------
+# 3. Data Preparation
+# ------------------------------------------------------------------
+try:
+    df_full = pd.read_csv('GRT_LBA.csv')
+except FileNotFoundError:
+    print("Error: 'GRT_LBA.csv' not found. Please ensure the file is in the same directory as this script.")
+    exit()
+
+participant_to_analyze = 31 
+df = df_full[df_full['participant'] == participant_to_analyze].copy()
+
+df['Response'] = df['Response'].astype(int) 
+df['RT'] = df['RT'].astype(float)
+
+print(f"Data loaded successfully. Analyzing participant: {participant_to_analyze}, with {len(df)} trials.")
+print(f"Reaction Time (RT) range: {df['RT'].min():.3f}s - {df['RT'].max():.3f}s")
+
+
+# ------------------------------------------------------------------
+# 4. Bayesian Model Definition
+# ------------------------------------------------------------------
+with pm.Model() as lba_model:
+    # -- Priors --
+    A = pm.HalfNormal('A', sigma=0.5)
+    b_minus_A = pm.HalfNormal('b_minus_A', sigma=0.3)
+    b = pm.Deterministic('b', A + b_minus_A)
+    tau = pm.Uniform('tau', lower=0, upper=df['RT'].min())
+    v = pm.Normal('v', mu=[1.5, 0.5], sigma=0.5, shape=2)
+
+    # -- Likelihood --
+    likelihood = pm.CustomDist(
+        'likelihood',
+        v, b, A, tau,
+        logp=lambda value, v, b, A, tau: lba_loglike(value[0], value[1], v, b, A, tau),
+        observed=(df['RT'].values, df['Response'].values)
+    )
+
+# ------------------------------------------------------------------
+# 5. Posterior Sampling
+# ------------------------------------------------------------------
+with lba_model:
+    print("\nModel definition complete. Starting posterior sampling...")
+    
+    idata = pm.sample(
+        draws=2000, 
+        tune=1500,
+        chains=4,
+        cores=1,
+        target_accept=0.9,
+        max_treedepth=12,
+        init="auto"
+    )
+    print("Sampling complete.")
+
+# ------------------------------------------------------------------
+# 6. Results Analysis & Visualization
+# ------------------------------------------------------------------
+with lba_model:
+    print("\nCalculating sampling statistics...")
+    divergences = idata.sample_stats.diverging.sum().item()
+    print(f"Total Divergences: {divergences}")
+
+    print("\nPosterior Summary:")
+    summary = az.summary(idata, var_names=['A', 'b_minus_A', 'b', 'v', 'tau'])
+    print(summary)
+
+    print("\nGenerating plots...")
+    try:
+        az.plot_posterior(idata, var_names=['A', 'b', 'v', 'tau'])
+        plt.suptitle("Posterior Distributions", y=1.02)
+        plt.savefig("posterior_plots.png")
+        plt.show()
+
+        az.plot_trace(idata, var_names=['A', 'b', 'v', 'tau'])
+        plt.tight_layout()
+        plt.savefig("trace_plots.png")
+        plt.show()
+
+        print("\nPlots have been generated and displayed. They are also saved as posterior_plots.png and trace_plots.png.")
+    except Exception as e:
+        print(f"An error occurred during plotting: {e}")
+
+print("\nAnalysis complete.")
