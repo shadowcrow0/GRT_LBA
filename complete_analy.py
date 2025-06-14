@@ -1,6 +1,5 @@
 """
-Proper Hierarchical GRT-LBA Model with Dimension-Based Architecture
-Tests three GRT assumptions: Decision Boundary Independence, Perceptual Separability, Perceptual Independence
+Progressive GRT Modeling: Step-by-step from 2-choice to full GRT
 """
 
 import numpy as np
@@ -8,193 +7,87 @@ import pandas as pd
 import pymc as pm
 import pytensor.tensor as pt
 import arviz as az
-from scipy import stats
 import warnings
 warnings.filterwarnings('ignore')
 
-def load_and_prepare_grt_data(file_path, max_participants=None, max_trials_per_participant=None):
+def load_progressive_data(n_participants=3, n_trials_per_participant=100):
     """
-    Load and prepare GRT data with proper dimensional structure
+    Load subset of data for progressive modeling
     """
-    print("Loading and preparing GRT data...")
+    print(f"Loading data for progressive modeling...")
     
-    # Load data
-    df = pd.read_csv(file_path)
-    print(f"Original data: {len(df)} trials from {df['participant'].nunique()} participants")
+    df = pd.read_csv('GRT_LBA.csv')
     
-    # Data cleaning
-    df = df[(df['RT'] > 0.1) & (df['RT'] < 3.0)]
-    print(f"After RT filtering: {len(df)} trials")
+    # Take subset for faster development
+    participants = sorted(df['participant'].unique())[:n_participants]
+    df_subset = df[df['participant'].isin(participants)]
     
-    # Optional: limit for testing
-    if max_participants:
-        participants = sorted(df['participant'].unique())[:max_participants]
-        df = df[df['participant'].isin(participants)]
-        print(f"Limited to {max_participants} participants: {len(df)} trials")
+    # Limit trials per participant
+    df_subset = df_subset.groupby('participant').head(n_trials_per_participant).reset_index(drop=True)
     
-    if max_trials_per_participant:
-        df = df.groupby('participant').head(max_trials_per_participant).reset_index(drop=True)
-        print(f"Limited to {max_trials_per_participant} trials per participant: {len(df)} trials")
+    # Clean data
+    df_subset = df_subset[(df_subset['RT'] > 0.1) & (df_subset['RT'] < 3.0)]
     
-    # Create participant indices
-    participants = sorted(df['participant'].unique())
+    # Create indices
     participant_map = {p: i for i, p in enumerate(participants)}
-    df['participant_idx'] = df['participant'].map(participant_map)
+    df_subset['participant_idx'] = df_subset['participant'].map(participant_map)
     
-    # GRT dimensional structure
-    # Channel1 = Left dimension (0=Low, 1=High)
-    # Channel2 = Right dimension (0=Low, 1=High)
-    df['left_dim'] = df['Chanel1'].astype(int)
-    df['right_dim'] = df['Chanel2'].astype(int)
-    df['stimulus'] = df['stim_condition'].astype(int)
-    df['response'] = df['Response'].astype(int)
+    print(f"Progressive dataset: {len(df_subset)} trials from {len(participants)} participants")
+    print(f"Average trials per participant: {len(df_subset)//len(participants)}")
     
-    # Verify GRT mapping
-    print(f"\nGRT Stimulus Mapping Verification:")
-    for stim in range(4):
-        stim_data = df[df['stimulus'] == stim].iloc[0]
-        print(f"Stimulus {stim}: Left={stim_data['left_dim']}, Right={stim_data['right_dim']}")
-    
-    # Convert to arrays for PyMC
-    data = {
-        'rt': df['RT'].values.astype(np.float32),
-        'response': df['response'].values.astype(np.int32),
-        'stimulus': df['stimulus'].values.astype(np.int32),
-        'left_dim': df['left_dim'].values.astype(np.int32),
-        'right_dim': df['right_dim'].values.astype(np.int32),
-        'participant_idx': df['participant_idx'].values.astype(np.int32),
-        'n_participants': len(participants),
-        'n_trials': len(df),
-        'participants': participants
-    }
-    
-    # Calculate accuracy
-    accuracy = np.mean(df['response'] == df['stimulus'])
-    print(f"\nDataset summary:")
-    print(f"  Participants: {data['n_participants']}")
-    print(f"  Total trials: {data['n_trials']}")
-    print(f"  Overall accuracy: {accuracy:.3f}")
-    
-    return data, df
+    return df_subset, participants
 
-def hierarchical_grt_lba_model(data, test_mode=True):
-    """
-    Hierarchical GRT-LBA model testing three GRT assumptions
-    
-    Architecture:
-    1. Left dimension processing (2 accumulators: Low/High)
-    2. Right dimension processing (2 accumulators: Low/High) 
-    3. Combined 4-accumulator race
-    
-    GRT Assumptions tested:
-    1. Decision Boundary Independence
-    2. Perceptual Separability
-    3. Perceptual Independence
-    """
-    print("Building hierarchical GRT-LBA model...")
-    
-    if test_mode:
-        # Use subset for testing (3 participants, 100 trials each)
-        n_test_participants = min(3, data['n_participants'])
-        n_test_trials_per_p = 100
-        
-        # Select subset
-        subset_mask = data['participant_idx'] < n_test_participants
-        subset_indices = np.where(subset_mask)[0]
-        
-        # Further limit trials per participant
-        final_indices = []
-        for p in range(n_test_participants):
-            p_indices = subset_indices[data['participant_idx'][subset_indices] == p]
-            selected = np.random.choice(p_indices, 
-                                      min(n_test_trials_per_p, len(p_indices)), 
-                                      replace=False)
-            final_indices.extend(selected)
-        
-        final_indices = np.array(final_indices)
-        
-        rt_obs = data['rt'][final_indices]
-        response_obs = data['response'][final_indices]
-        stimulus_obs = data['stimulus'][final_indices]
-        left_dim_obs = data['left_dim'][final_indices]
-        right_dim_obs = data['right_dim'][final_indices]
-        participant_obs = data['participant_idx'][final_indices]
-        
-        n_trials = len(final_indices)
-        n_participants = n_test_participants
-        
-        print(f"Test mode: {n_participants} participants, {n_trials} trials")
-    else:
-        rt_obs = data['rt']
-        response_obs = data['response']
-        stimulus_obs = data['stimulus']
-        left_dim_obs = data['left_dim']
-        right_dim_obs = data['right_dim']
-        participant_obs = data['participant_idx']
-        n_trials = data['n_trials']
-        n_participants = data['n_participants']
-        
-        print(f"Full mode: {n_participants} participants, {n_trials} trials")
+# =============================================================================
+# STEP 1: 2-CHOICE LBA MODEL
+# =============================================================================
 
-    with pm.Model() as model:
+def step1_2choice_lba(df, participants):
+    """
+    Step 1: Simple 2-choice LBA model
+    Convert 4-choice problem to 2-choice for initial validation
+    """
+    print("\n" + "="*60)
+    print("STEP 1: 2-CHOICE LBA MODEL")
+    print("="*60)
+    
+    # Convert to 2-choice problem
+    # Choice 1: Responses 0,1 (Left dimension focused)
+    # Choice 2: Responses 2,3 (Right dimension focused)
+    df['choice_2'] = (df['Response'] >= 2).astype(int)
+    df['stimulus_2'] = (df['stim_condition'] >= 2).astype(int)
+    
+    print(f"2-choice conversion:")
+    print(f"Choice 0 (responses 0,1): {np.sum(df['choice_2']==0)} trials")
+    print(f"Choice 1 (responses 2,3): {np.sum(df['choice_2']==1)} trials")
+    
+    # Prepare data
+    rt_obs = df['RT'].values.astype(np.float32)
+    choice_obs = df['choice_2'].values.astype(np.int32)
+    stimulus_obs = df['stimulus_2'].values.astype(np.int32)
+    participant_obs = df['participant_idx'].values.astype(np.int32)
+    
+    n_trials = len(df)
+    n_participants = len(participants)
+    
+    with pm.Model() as model_2choice:
         
-        # =============================================
-        # HIERARCHICAL GROUP-LEVEL PARAMETERS
-        # =============================================
-        
-        print("Setting up hierarchical parameters...")
-        
-        # Basic LBA parameters (group level)
-        A_mu = pm.HalfNormal('A_mu', sigma=0.3)  # Start point upper bound
+        # Group-level parameters
+        A_mu = pm.HalfNormal('A_mu', sigma=0.3)
         A_sigma = pm.HalfNormal('A_sigma', sigma=0.1)
         
-        b_excess_mu = pm.HalfNormal('b_excess_mu', sigma=0.4)  # Threshold above A
+        b_excess_mu = pm.HalfNormal('b_excess_mu', sigma=0.4)
         b_excess_sigma = pm.HalfNormal('b_excess_sigma', sigma=0.2)
         
-        t0_mu = pm.HalfNormal('t0_mu', sigma=0.2)  # Non-decision time
+        t0_mu = pm.HalfNormal('t0_mu', sigma=0.2)
         t0_sigma = pm.HalfNormal('t0_sigma', sigma=0.05)
         
-        # Drift rate parameters (group level)
-        drift_base_mu = pm.HalfNormal('drift_base_mu', sigma=1.0)  # Base drift rate
-        drift_base_sigma = pm.HalfNormal('drift_base_sigma', sigma=0.3)
+        v1_mu = pm.HalfNormal('v1_mu', sigma=1.0)
+        v1_sigma = pm.HalfNormal('v1_sigma', sigma=0.3)
         
-        drift_correct_boost_mu = pm.HalfNormal('drift_correct_boost_mu', sigma=0.8)  # Boost for correct response
-        drift_correct_boost_sigma = pm.HalfNormal('drift_correct_boost_sigma', sigma=0.3)
+        v2_mu = pm.HalfNormal('v2_mu', sigma=1.0)
+        v2_sigma = pm.HalfNormal('v2_sigma', sigma=0.3)
         
-        # =============================================
-        # GRT VIOLATION PARAMETERS (GROUP LEVEL)
-        # =============================================
-        
-        # 1. DECISION BOUNDARY INDEPENDENCE VIOLATIONS
-        # Left boundary affected by right dimension
-        boundary_left_by_right_mu = pm.Normal('boundary_left_by_right_mu', mu=0, sigma=0.2)
-        boundary_left_by_right_sigma = pm.HalfNormal('boundary_left_by_right_sigma', sigma=0.1)
-        
-        # Right boundary affected by left dimension  
-        boundary_right_by_left_mu = pm.Normal('boundary_right_by_left_mu', mu=0, sigma=0.2)
-        boundary_right_by_left_sigma = pm.HalfNormal('boundary_right_by_left_sigma', sigma=0.1)
-        
-        # 2. PERCEPTUAL SEPARABILITY VIOLATIONS
-        # Left perception affected by right stimulus
-        separability_left_by_right_mu = pm.Normal('separability_left_by_right_mu', mu=0, sigma=0.3)
-        separability_left_by_right_sigma = pm.HalfNormal('separability_left_by_right_sigma', sigma=0.2)
-        
-        # Right perception affected by left stimulus
-        separability_right_by_left_mu = pm.Normal('separability_right_by_left_mu', mu=0, sigma=0.3)
-        separability_right_by_left_sigma = pm.HalfNormal('separability_right_by_left_sigma', sigma=0.2)
-        
-        # 3. PERCEPTUAL INDEPENDENCE VIOLATIONS
-        # Correlation between left and right evidence
-        independence_correlation_mu = pm.Normal('independence_correlation_mu', mu=0, sigma=0.3)
-        independence_correlation_sigma = pm.HalfNormal('independence_correlation_sigma', sigma=0.2)
-        
-        # =============================================
-        # INDIVIDUAL PARTICIPANT PARAMETERS
-        # =============================================
-        
-        print("Setting up individual parameters...")
-        
-        # Individual LBA parameters
+        # Individual parameters
         A_raw = pm.Normal('A_raw', mu=0, sigma=1, shape=n_participants)
         A = pm.Deterministic('A', pm.math.maximum(A_mu + A_sigma * A_raw, 0.05))
         
@@ -203,50 +96,291 @@ def hierarchical_grt_lba_model(data, test_mode=True):
         b = pm.Deterministic('b', A + b_excess)
         
         t0_raw = pm.Normal('t0_raw', mu=0, sigma=1, shape=n_participants)
-        t0 = pm.Deterministic('t0', pm.math.maximum(t0_mu + t0_sigma * t0_raw, 0.05))
+        t0 = pm.Deterministic('t0', pm.math.maximum(t0_mu + t0_sigma * t0_raw, 0.01))
+        
+        v1_raw = pm.Normal('v1_raw', mu=0, sigma=1, shape=n_participants)
+        v1 = pm.Deterministic('v1', pm.math.maximum(v1_mu + v1_sigma * v1_raw, 0.1))
+        
+        v2_raw = pm.Normal('v2_raw', mu=0, sigma=1, shape=n_participants)
+        v2 = pm.Deterministic('v2', pm.math.maximum(v2_mu + v2_sigma * v2_raw, 0.1))
+        
+        # Simplified LBA likelihood
+        def lba_2choice_likelihood():
+            rt_decision = pt.maximum(rt_obs - t0[participant_obs], 0.01)
+            
+            total_loglik = 0.0
+            
+            for i in range(n_trials):
+                rt_i = rt_decision[i]
+                choice_i = choice_obs[i]
+                participant_i = participant_obs[i]
+                
+                A_i = A[participant_i]
+                b_i = b[participant_i]
+                v1_i = v1[participant_i]
+                v2_i = v2[participant_i]
+                
+                # Determine drift rates
+                if choice_i == 0:
+                    v_winner = v1_i
+                    v_loser = v2_i
+                else:
+                    v_winner = v2_i
+                    v_loser = v1_i
+                
+                # Simplified LBA PDF for winner
+                sqrt_t = pt.sqrt(rt_i)
+                z1 = (v_winner * rt_i - b_i) / sqrt_t
+                z2 = (v_winner * rt_i - A_i) / sqrt_t
+                
+                Phi_z1 = 0.5 * (1 + pt.erf(z1 / pt.sqrt(2)))
+                Phi_z2 = 0.5 * (1 + pt.erf(z2 / pt.sqrt(2)))
+                phi_z1 = pt.exp(-0.5 * z1**2) / pt.sqrt(2 * np.pi)
+                phi_z2 = pt.exp(-0.5 * z2**2) / pt.sqrt(2 * np.pi)
+                
+                winner_pdf = (1/A_i) * (v_winner * (Phi_z1 - Phi_z2) + (phi_z1 - phi_z2) / sqrt_t)
+                winner_logpdf = pt.log(pt.maximum(winner_pdf, 1e-10))
+                
+                # Simplified survival for loser
+                z1_lose = (v_loser * rt_i - b_i) / sqrt_t
+                z2_lose = (v_loser * rt_i - A_i) / sqrt_t
+                Phi_z1_lose = 0.5 * (1 + pt.erf(z1_lose / pt.sqrt(2)))
+                Phi_z2_lose = 0.5 * (1 + pt.erf(z2_lose / pt.sqrt(2)))
+                
+                loser_survival = 1 - (Phi_z1_lose - Phi_z2_lose)
+                loser_log_survival = pt.log(pt.maximum(loser_survival, 1e-10))
+                
+                total_loglik += winner_logpdf + loser_log_survival
+            
+            return total_loglik
+        
+        pm.Potential('lba_likelihood', lba_2choice_likelihood())
+        
+        # Derived quantities
+        pm.Deterministic('drift_difference', v1_mu - v2_mu)
+    
+    print("2-choice model created successfully!")
+    return model_2choice
+
+# =============================================================================
+# STEP 2: 4-CHOICE LBA MODEL
+# =============================================================================
+
+def step2_4choice_lba(df, participants):
+    """
+    Step 2: Expand to full 4-choice LBA model (no GRT violations yet)
+    """
+    print("\n" + "="*60)
+    print("STEP 2: 4-CHOICE LBA MODEL")
+    print("="*60)
+    
+    # Use original 4-choice structure
+    rt_obs = df['RT'].values.astype(np.float32)
+    response_obs = df['Response'].values.astype(np.int32)
+    stimulus_obs = df['stim_condition'].values.astype(np.int32)
+    participant_obs = df['participant_idx'].values.astype(np.int32)
+    
+    n_trials = len(df)
+    n_participants = len(participants)
+    
+    print(f"4-choice data:")
+    for resp in range(4):
+        count = np.sum(response_obs == resp)
+        print(f"Response {resp}: {count} trials")
+    
+    with pm.Model() as model_4choice:
+        
+        # Group-level parameters (same structure as 2-choice)
+        A_mu = pm.HalfNormal('A_mu', sigma=0.3)
+        A_sigma = pm.HalfNormal('A_sigma', sigma=0.1)
+        
+        b_excess_mu = pm.HalfNormal('b_excess_mu', sigma=0.4)
+        b_excess_sigma = pm.HalfNormal('b_excess_sigma', sigma=0.2)
+        
+        t0_mu = pm.HalfNormal('t0_mu', sigma=0.2)
+        t0_sigma = pm.HalfNormal('t0_sigma', sigma=0.05)
+        
+        # Drift rates for 4 accumulators
+        drift_base_mu = pm.HalfNormal('drift_base_mu', sigma=0.8)
+        drift_base_sigma = pm.HalfNormal('drift_base_sigma', sigma=0.3)
+        
+        drift_boost_mu = pm.HalfNormal('drift_boost_mu', sigma=0.6)
+        drift_boost_sigma = pm.HalfNormal('drift_boost_sigma', sigma=0.3)
+        
+        # Individual parameters
+        A_raw = pm.Normal('A_raw', mu=0, sigma=1, shape=n_participants)
+        A = pm.Deterministic('A', pm.math.maximum(A_mu + A_sigma * A_raw, 0.05))
+        
+        b_excess_raw = pm.Normal('b_excess_raw', mu=0, sigma=1, shape=n_participants)
+        b_excess = pm.Deterministic('b_excess', pm.math.maximum(b_excess_mu + b_excess_sigma * b_excess_raw, 0.05))
+        b = pm.Deterministic('b', A + b_excess)
+        
+        t0_raw = pm.Normal('t0_raw', mu=0, sigma=1, shape=n_participants)
+        t0 = pm.Deterministic('t0', pm.math.maximum(t0_mu + t0_sigma * t0_raw, 0.01))
         
         drift_base_raw = pm.Normal('drift_base_raw', mu=0, sigma=1, shape=n_participants)
         drift_base = pm.Deterministic('drift_base', pm.math.maximum(drift_base_mu + drift_base_sigma * drift_base_raw, 0.1))
         
-        drift_correct_boost_raw = pm.Normal('drift_correct_boost_raw', mu=0, sigma=1, shape=n_participants)
-        drift_correct_boost = pm.Deterministic('drift_correct_boost', 
-                                             pm.math.maximum(drift_correct_boost_mu + drift_correct_boost_sigma * drift_correct_boost_raw, 0.1))
+        drift_boost_raw = pm.Normal('drift_boost_raw', mu=0, sigma=1, shape=n_participants)
+        drift_boost = pm.Deterministic('drift_boost', pm.math.maximum(drift_boost_mu + drift_boost_sigma * drift_boost_raw, 0.1))
         
-        # Individual GRT violation parameters
-        boundary_left_by_right_raw = pm.Normal('boundary_left_by_right_raw', mu=0, sigma=1, shape=n_participants)
-        boundary_left_by_right = pm.Deterministic('boundary_left_by_right', 
-                                                 boundary_left_by_right_mu + boundary_left_by_right_sigma * boundary_left_by_right_raw)
-        
-        boundary_right_by_left_raw = pm.Normal('boundary_right_by_left_raw', mu=0, sigma=1, shape=n_participants)
-        boundary_right_by_left = pm.Deterministic('boundary_right_by_left',
-                                                 boundary_right_by_left_mu + boundary_right_by_left_sigma * boundary_right_by_left_raw)
-        
-        separability_left_by_right_raw = pm.Normal('separability_left_by_right_raw', mu=0, sigma=1, shape=n_participants)
-        separability_left_by_right = pm.Deterministic('separability_left_by_right',
-                                                     separability_left_by_right_mu + separability_left_by_right_sigma * separability_left_by_right_raw)
-        
-        separability_right_by_left_raw = pm.Normal('separability_right_by_left_raw', mu=0, sigma=1, shape=n_participants)
-        separability_right_by_left = pm.Deterministic('separability_right_by_left',
-                                                     separability_right_by_left_mu + separability_right_by_left_sigma * separability_right_by_left_raw)
-        
-        independence_correlation_raw = pm.Normal('independence_correlation_raw', mu=0, sigma=1, shape=n_participants)
-        independence_correlation = pm.Deterministic('independence_correlation',
-                                                   independence_correlation_mu + independence_correlation_sigma * independence_correlation_raw)
-        
-        # =============================================
-        # GRT-LBA LIKELIHOOD FUNCTION
-        # =============================================
-        
-        print("Setting up GRT-LBA likelihood...")
-        
-        def grt_lba_likelihood():
-            """
-            Exact GRT-LBA likelihood with dimensional architecture
-            """
+        # 4-choice LBA likelihood (no GRT violations)
+        def lba_4choice_likelihood():
             rt_decision = pt.maximum(rt_obs - t0[participant_obs], 0.01)
+            
             total_loglik = 0.0
             
-            # Process each trial
+            for i in range(n_trials):
+                rt_i = rt_decision[i]
+                response_i = response_obs[i]
+                stimulus_i = stimulus_obs[i]
+                participant_i = participant_obs[i]
+                
+                A_i = A[participant_i]
+                b_i = b[participant_i]
+                drift_base_i = drift_base[participant_i]
+                drift_boost_i = drift_boost[participant_i]
+                
+                # Compute drift rates for 4 accumulators
+                drift_rates = pt.zeros(4)
+                for acc in range(4):
+                    # Correct accumulator gets boost
+                    if acc == stimulus_i:
+                        rate = drift_base_i + drift_boost_i
+                    else:
+                        rate = drift_base_i
+                    
+                    drift_rates = pt.set_subtensor(drift_rates[acc], rate)
+                
+                # Winner accumulator
+                v_winner = drift_rates[response_i]
+                
+                # Winner PDF
+                sqrt_t = pt.sqrt(rt_i)
+                z1 = (v_winner * rt_i - b_i) / sqrt_t
+                z2 = (v_winner * rt_i - A_i) / sqrt_t
+                
+                Phi_z1 = 0.5 * (1 + pt.erf(z1 / pt.sqrt(2)))
+                Phi_z2 = 0.5 * (1 + pt.erf(z2 / pt.sqrt(2)))
+                phi_z1 = pt.exp(-0.5 * z1**2) / pt.sqrt(2 * np.pi)
+                phi_z2 = pt.exp(-0.5 * z2**2) / pt.sqrt(2 * np.pi)
+                
+                winner_pdf = (1/A_i) * (v_winner * (Phi_z1 - Phi_z2) + (phi_z1 - phi_z2) / sqrt_t)
+                winner_logpdf = pt.log(pt.maximum(winner_pdf, 1e-10))
+                
+                # Losers survival
+                losers_log_survival = 0.0
+                for acc in range(4):
+                    if acc != response_i:
+                        v_loser = drift_rates[acc]
+                        z1_lose = (v_loser * rt_i - b_i) / sqrt_t
+                        z2_lose = (v_loser * rt_i - A_i) / sqrt_t
+                        
+                        Phi_z1_lose = 0.5 * (1 + pt.erf(z1_lose / pt.sqrt(2)))
+                        Phi_z2_lose = 0.5 * (1 + pt.erf(z2_lose / pt.sqrt(2)))
+                        
+                        loser_survival = 1 - (Phi_z1_lose - Phi_z2_lose)
+                        losers_log_survival += pt.log(pt.maximum(loser_survival, 1e-10))
+                
+                total_loglik += winner_logpdf + losers_log_survival
+            
+            return total_loglik
+        
+        pm.Potential('lba_likelihood', lba_4choice_likelihood())
+        
+        # Derived quantities
+        pm.Deterministic('accuracy_effect', drift_boost_mu)
+    
+    print("4-choice model created successfully!")
+    return model_4choice
+
+# =============================================================================
+# STEP 3: FULL GRT MODEL
+# =============================================================================
+
+def step3_full_grt(df, participants):
+    """
+    Step 3: Add GRT violation parameters to 4-choice LBA
+    """
+    print("\n" + "="*60)
+    print("STEP 3: FULL GRT MODEL")
+    print("="*60)
+    
+    # Add dimensional information
+    df['left_dim'] = df['Chanel1'].astype(int)
+    df['right_dim'] = df['Chanel2'].astype(int)
+    
+    rt_obs = df['RT'].values.astype(np.float32)
+    response_obs = df['Response'].values.astype(np.int32)
+    stimulus_obs = df['stim_condition'].values.astype(np.int32)
+    left_dim_obs = df['left_dim'].values.astype(np.int32)
+    right_dim_obs = df['right_dim'].values.astype(np.int32)
+    participant_obs = df['participant_idx'].values.astype(np.int32)
+    
+    n_trials = len(df)
+    n_participants = len(participants)
+    
+    with pm.Model() as model_grt:
+        
+        # Base LBA parameters (same as Step 2)
+        A_mu = pm.HalfNormal('A_mu', sigma=0.3)
+        A_sigma = pm.HalfNormal('A_sigma', sigma=0.1)
+        
+        b_excess_mu = pm.HalfNormal('b_excess_mu', sigma=0.4)
+        b_excess_sigma = pm.HalfNormal('b_excess_sigma', sigma=0.2)
+        
+        t0_mu = pm.HalfNormal('t0_mu', sigma=0.2)
+        t0_sigma = pm.HalfNormal('t0_sigma', sigma=0.05)
+        
+        drift_base_mu = pm.HalfNormal('drift_base_mu', sigma=0.8)
+        drift_base_sigma = pm.HalfNormal('drift_base_sigma', sigma=0.3)
+        
+        drift_boost_mu = pm.HalfNormal('drift_boost_mu', sigma=0.6)
+        drift_boost_sigma = pm.HalfNormal('drift_boost_sigma', sigma=0.3)
+        
+        # GRT violation parameters (group level)
+        separability_lr_mu = pm.Normal('separability_lr_mu', mu=0, sigma=0.2)
+        separability_lr_sigma = pm.HalfNormal('separability_lr_sigma', sigma=0.1)
+        
+        separability_rl_mu = pm.Normal('separability_rl_mu', mu=0, sigma=0.2)
+        separability_rl_sigma = pm.HalfNormal('separability_rl_sigma', sigma=0.1)
+        
+        independence_mu = pm.Normal('independence_mu', mu=0, sigma=0.2)
+        independence_sigma = pm.HalfNormal('independence_sigma', sigma=0.1)
+        
+        # Individual parameters
+        A_raw = pm.Normal('A_raw', mu=0, sigma=1, shape=n_participants)
+        A = pm.Deterministic('A', pm.math.maximum(A_mu + A_sigma * A_raw, 0.05))
+        
+        b_excess_raw = pm.Normal('b_excess_raw', mu=0, sigma=1, shape=n_participants)
+        b_excess = pm.Deterministic('b_excess', pm.math.maximum(b_excess_mu + b_excess_sigma * b_excess_raw, 0.05))
+        b = pm.Deterministic('b', A + b_excess)
+        
+        t0_raw = pm.Normal('t0_raw', mu=0, sigma=1, shape=n_participants)
+        t0 = pm.Deterministic('t0', pm.math.maximum(t0_mu + t0_sigma * t0_raw, 0.01))
+        
+        drift_base_raw = pm.Normal('drift_base_raw', mu=0, sigma=1, shape=n_participants)
+        drift_base = pm.Deterministic('drift_base', pm.math.maximum(drift_base_mu + drift_base_sigma * drift_base_raw, 0.1))
+        
+        drift_boost_raw = pm.Normal('drift_boost_raw', mu=0, sigma=1, shape=n_participants)
+        drift_boost = pm.Deterministic('drift_boost', pm.math.maximum(drift_boost_mu + drift_boost_sigma * drift_boost_raw, 0.1))
+        
+        # GRT individual parameters
+        separability_lr_raw = pm.Normal('separability_lr_raw', mu=0, sigma=1, shape=n_participants)
+        separability_lr = pm.Deterministic('separability_lr', separability_lr_mu + separability_lr_sigma * separability_lr_raw)
+        
+        separability_rl_raw = pm.Normal('separability_rl_raw', mu=0, sigma=1, shape=n_participants)
+        separability_rl = pm.Deterministic('separability_rl', separability_rl_mu + separability_rl_sigma * separability_rl_raw)
+        
+        independence_raw = pm.Normal('independence_raw', mu=0, sigma=1, shape=n_participants)
+        independence = pm.Deterministic('independence', independence_mu + independence_sigma * independence_raw)
+        
+        # Full GRT-LBA likelihood
+        def grt_lba_likelihood():
+            rt_decision = pt.maximum(rt_obs - t0[participant_obs], 0.01)
+            
+            total_loglik = 0.0
+            
             for i in range(n_trials):
                 rt_i = rt_decision[i]
                 response_i = response_obs[i]
@@ -255,194 +389,155 @@ def hierarchical_grt_lba_model(data, test_mode=True):
                 right_i = right_dim_obs[i]
                 participant_i = participant_obs[i]
                 
-                # Get individual parameters for this participant
                 A_i = A[participant_i]
                 b_i = b[participant_i]
                 drift_base_i = drift_base[participant_i]
-                drift_boost_i = drift_correct_boost[participant_i]
+                drift_boost_i = drift_boost[participant_i]
+                sep_lr_i = separability_lr[participant_i]
+                sep_rl_i = separability_rl[participant_i]
+                indep_i = independence[participant_i]
                 
-                # GRT violation parameters for this participant
-                bound_lr_i = boundary_left_by_right[participant_i]
-                bound_rl_i = boundary_right_by_left[participant_i]
-                sep_lr_i = separability_left_by_right[participant_i]
-                sep_rl_i = separability_right_by_left[participant_i]
-                indep_i = independence_correlation[participant_i]
-                
-                # Compute drift rates for 4 accumulators with GRT effects
+                # Compute drift rates with GRT effects
                 drift_rates = pt.zeros(4)
                 
                 for acc in range(4):
-                    # Determine accumulator's dimensional preferences
-                    acc_left = acc // 2  # 0,1 -> 0; 2,3 -> 1
-                    acc_right = acc % 2  # 0,2 -> 0; 1,3 -> 1
+                    acc_left = acc // 2
+                    acc_right = acc % 2
                     
-                    # Base drift rate
+                    # Base drift
                     base_rate = pt.switch(pt.eq(acc, stimulus_i),
                                         drift_base_i + drift_boost_i,
                                         drift_base_i)
                     
-                    # PERCEPTUAL SEPARABILITY violations
-                    # Left perception affected by right stimulus
-                    sep_left_effect = pt.switch(pt.eq(acc_left, left_i),
-                                              sep_lr_i * right_i,  # Enhancement when matching
-                                              -sep_lr_i * right_i)  # Interference when mismatching
+                    # Separability violations
+                    sep_lr_effect = pt.switch(pt.eq(acc_left, left_i),
+                                            sep_lr_i * right_i,
+                                            -sep_lr_i * right_i)
                     
-                    # Right perception affected by left stimulus  
-                    sep_right_effect = pt.switch(pt.eq(acc_right, right_i),
-                                               sep_rl_i * left_i,
-                                               -sep_rl_i * left_i)
+                    sep_rl_effect = pt.switch(pt.eq(acc_right, right_i),
+                                            sep_rl_i * left_i,
+                                            -sep_rl_i * left_i)
                     
-                    # PERCEPTUAL INDEPENDENCE violations
-                    # Correlation effect when both dimensions match
+                    # Independence violation
                     indep_effect = pt.switch(pt.and_(pt.eq(acc_left, left_i), pt.eq(acc_right, right_i)),
-                                           indep_i,
-                                           0.0)
+                                           indep_i, 0.0)
                     
-                    # Final drift rate
-                    final_drift = pt.maximum(base_rate + sep_left_effect + sep_right_effect + indep_effect, 0.05)
-                    drift_rates = pt.set_subtensor(drift_rates[acc], final_drift)
+                    final_rate = pt.maximum(base_rate + sep_lr_effect + sep_rl_effect + indep_effect, 0.05)
+                    drift_rates = pt.set_subtensor(drift_rates[acc], final_rate)
                 
-                # DECISION BOUNDARY INDEPENDENCE violations
-                # Modify thresholds based on irrelevant dimension
-                threshold_left = b_i + bound_lr_i * right_i  # Left threshold affected by right
-                threshold_right = b_i + bound_rl_i * left_i  # Right threshold affected by left
-                
-                # Apply threshold modifications to appropriate accumulators
-                thresholds = pt.stack([
-                    threshold_left,   # Acc 0: Left-High + Right-Low
-                    b_i,             # Acc 1: Left-Low + Right-Low (baseline)
-                    threshold_right, # Acc 2: Left-Low + Right-High
-                    threshold_left + threshold_right - b_i  # Acc 3: Both affected
-                ])
-                
-                # Exact LBA likelihood computation
+                # LBA likelihood computation (same as Step 2)
                 v_winner = drift_rates[response_i]
-                threshold_winner = thresholds[response_i]
                 
                 sqrt_t = pt.sqrt(rt_i)
-                v_t = v_winner * rt_i
+                z1 = (v_winner * rt_i - b_i) / sqrt_t
+                z2 = (v_winner * rt_i - A_i) / sqrt_t
                 
-                # Winner PDF
-                z1_win = (v_t - threshold_winner) / sqrt_t
-                z2_win = (v_t - A_i) / sqrt_t
+                Phi_z1 = 0.5 * (1 + pt.erf(z1 / pt.sqrt(2)))
+                Phi_z2 = 0.5 * (1 + pt.erf(z2 / pt.sqrt(2)))
+                phi_z1 = pt.exp(-0.5 * z1**2) / pt.sqrt(2 * np.pi)
+                phi_z2 = pt.exp(-0.5 * z2**2) / pt.sqrt(2 * np.pi)
                 
-                Phi_z1_win = 0.5 * (1 + pt.erf(z1_win / pt.sqrt(2)))
-                Phi_z2_win = 0.5 * (1 + pt.erf(z2_win / pt.sqrt(2)))
-                phi_z1_win = pt.exp(-0.5 * z1_win**2) / pt.sqrt(2 * np.pi)
-                phi_z2_win = pt.exp(-0.5 * z2_win**2) / pt.sqrt(2 * np.pi)
-                
-                term1 = v_winner * (Phi_z1_win - Phi_z2_win)
-                term2 = (phi_z1_win - phi_z2_win) / sqrt_t
-                winner_pdf = (1 / A_i) * (term1 + term2)
+                winner_pdf = (1/A_i) * (v_winner * (Phi_z1 - Phi_z2) + (phi_z1 - phi_z2) / sqrt_t)
                 winner_logpdf = pt.log(pt.maximum(winner_pdf, 1e-10))
                 
-                # Losers survival
                 losers_log_survival = 0.0
                 for acc in range(4):
                     if acc != response_i:
                         v_loser = drift_rates[acc]
-                        threshold_loser = thresholds[acc]
-                        v_t_loser = v_loser * rt_i
-                        
-                        z1_lose = (v_t_loser - threshold_loser) / sqrt_t
-                        z2_lose = (v_t_loser - A_i) / sqrt_t
+                        z1_lose = (v_loser * rt_i - b_i) / sqrt_t
+                        z2_lose = (v_loser * rt_i - A_i) / sqrt_t
                         
                         Phi_z1_lose = 0.5 * (1 + pt.erf(z1_lose / pt.sqrt(2)))
                         Phi_z2_lose = 0.5 * (1 + pt.erf(z2_lose / pt.sqrt(2)))
                         
-                        loser_cdf = Phi_z1_lose - Phi_z2_lose
-                        loser_survival = 1 - loser_cdf
+                        loser_survival = 1 - (Phi_z1_lose - Phi_z2_lose)
                         losers_log_survival += pt.log(pt.maximum(loser_survival, 1e-10))
                 
-                # Total trial likelihood
-                trial_loglik = winner_logpdf + losers_log_survival
-                total_loglik += trial_loglik
+                total_loglik += winner_logpdf + losers_log_survival
             
             return total_loglik
         
-        # Add likelihood to model
         pm.Potential('grt_lba_likelihood', grt_lba_likelihood())
         
-        # =============================================
-        # DERIVED QUANTITIES FOR INTERPRETATION
-        # =============================================
-        
-        # Group-level GRT assumption tests
-        pm.Deterministic('boundary_independence_violation', 
-                        pt.sqrt(boundary_left_by_right_mu**2 + boundary_right_by_left_mu**2))
-        
-        pm.Deterministic('perceptual_separability_violation',
-                        pt.sqrt(separability_left_by_right_mu**2 + separability_right_by_left_mu**2))
-        
-        pm.Deterministic('perceptual_independence_violation',
-                        pt.abs(independence_correlation_mu))
-        
-        print("Model setup complete!")
-        
-    return model
+        # GRT assumption tests
+        pm.Deterministic('separability_violation', pt.sqrt(separability_lr_mu**2 + separability_rl_mu**2))
+        pm.Deterministic('independence_violation', pt.abs(independence_mu))
+    
+    print("Full GRT model created successfully!")
+    return model_grt
 
-def run_grt_analysis(data_file, test_mode=True, n_samples=200, n_chains=2):
+def run_progressive_analysis():
     """
-    Run complete GRT-LBA analysis
+    Run the complete progressive analysis
     """
-    print("=" * 60)
-    print("HIERARCHICAL GRT-LBA ANALYSIS")
+    print("🚀 PROGRESSIVE GRT MODELING")
     print("=" * 60)
     
     # Load data
-    data, df = load_and_prepare_grt_data(data_file, 
-                                        max_participants=5 if test_mode else None,
-                                        max_trials_per_participant=150 if test_mode else None)
+    df, participants = load_progressive_data(n_participants=3, n_trials_per_participant=80)
     
-    # Build model
-    model = hierarchical_grt_lba_model(data, test_mode=test_mode)
+    results = {}
     
-    # Sample
-    print(f"\nStarting MCMC sampling...")
-    print(f"Samples: {n_samples}, Chains: {n_chains}")
+    # Step 1: 2-choice LBA
+    print(f"\n⏱️ Step 1 estimated time: 3-5 minutes")
+    model_2choice = step1_2choice_lba(df, participants)
     
-    with model:
-        trace = pm.sample(
-            draws=n_samples,
-            tune=n_samples//2,
-            chains=n_chains,
-            cores=1,
-            target_accept=0.85,
-            return_inferencedata=True,
-            progressbar=True,
-            random_seed=42
-        )
-    
-    print("✅ Sampling completed!")
-    
-    # Analysis
-    print("\n" + "=" * 60)
-    print("GRT ASSUMPTION TEST RESULTS")
-    print("=" * 60)
-    
-    # Extract key parameters
-    posterior = trace.posterior
-    
-    # Test results
-    boundary_violation = posterior['boundary_independence_violation'].values.mean()
-    separability_violation = posterior['perceptual_separability_violation'].values.mean()
-    independence_violation = posterior['perceptual_independence_violation'].values.mean()
-    
-    print(f"\n1. DECISION BOUNDARY INDEPENDENCE:")
-    print(f"   Violation magnitude: {boundary_violation:.4f}")
-    print(f"   {'❌ VIOLATED' if boundary_violation > 0.1 else '✅ SATISFIED'}")
-    
-    print(f"\n2. PERCEPTUAL SEPARABILITY:")
-    print(f"   Violation magnitude: {separability_violation:.4f}")
-    print(f"   {'❌ VIOLATED' if separability_violation > 0.1 else '✅ SATISFIED'}")
-    
-    print(f"\n3. PERCEPTUAL INDEPENDENCE:")
-    print(f"   Violation magnitude: {independence_violation:.4f}")
-    print(f"   {'❌ VIOLATED' if independence_violation > 0.1 else '✅ SATISFIED'}")
-    
-    return trace, model, data
+    try:
+        with model_2choice:
+            trace_2choice = pm.sample(draws=100, tune=50, chains=2, cores=1, 
+                                    progressbar=True, return_inferencedata=True, random_seed=42)
+        
+        print("✅ Step 1 completed successfully!")
+        results['step1'] = {'trace': trace_2choice, 'model': model_2choice}
+        
+        # Step 2: 4-choice LBA
+        print(f"\n⏱️ Step 2 estimated time: 5-8 minutes")
+        model_4choice = step2_4choice_lba(df, participants)
+        
+        with model_4choice:
+            trace_4choice = pm.sample(draws=100, tune=50, chains=2, cores=1,
+                                    progressbar=True, return_inferencedata=True, random_seed=42)
+        
+        print("✅ Step 2 completed successfully!")
+        results['step2'] = {'trace': trace_4choice, 'model': model_4choice}
+        
+        # Step 3: Full GRT
+        print(f"\n⏱️ Step 3 estimated time: 8-12 minutes")
+        model_grt = step3_full_grt(df, participants)
+        
+        with model_grt:
+            trace_grt = pm.sample(draws=150, tune=75, chains=2, cores=1,
+                                progressbar=True, return_inferencedata=True, random_seed=42)
+        
+        print("✅ Step 3 completed successfully!")
+        results['step3'] = {'trace': trace_grt, 'model': model_grt}
+        
+        # Final results
+        print("\n" + "=" * 60)
+        print("🎉 PROGRESSIVE MODELING COMPLETED!")
+        print("=" * 60)
+        
+        # GRT results
+        posterior = trace_grt.posterior
+        sep_violation = posterior['separability_violation'].values.mean()
+        indep_violation = posterior['independence_violation'].values.mean()
+        
+        print(f"\n📊 FINAL GRT RESULTS:")
+        print(f"Perceptual Separability violation: {sep_violation:.4f}")
+        print(f"Perceptual Independence violation: {indep_violation:.4f}")
+        
+        print(f"\nGRT Assumptions:")
+        print(f"Separability: {'❌ VIOLATED' if sep_violation > 0.1 else '✅ SATISFIED'}")
+        print(f"Independence: {'❌ VIOLATED' if indep_violation > 0.1 else '✅ SATISFIED'}")
+        
+        return results
+        
+    except Exception as e:
+        print(f"❌ Progressive modeling failed at step: {e}")
+        import traceback
+        traceback.print_exc()
+        return results
 
 # Example usage
 if __name__ == "__main__":
-    # Run analysis
-    trace, model, data = run_grt_analysis('GRT_LBA.csv', test_mode=True)
+    results = run_progressive_analysis()
