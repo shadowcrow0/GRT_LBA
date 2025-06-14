@@ -1,563 +1,448 @@
 """
-Exact LBA Mathematical Implementation for GRT Analysis
-Based on Heathcote & Brown (2008) and Brown & Heathcote (2008)
-Full mathematical precision for scientific rigor
+Proper Hierarchical GRT-LBA Model with Dimension-Based Architecture
+Tests three GRT assumptions: Decision Boundary Independence, Perceptual Separability, Perceptual Independence
 """
 
 import numpy as np
 import pandas as pd
-from scipy import stats, special
+import pymc as pm
+import pytensor.tensor as pt
+import arviz as az
+from scipy import stats
 import warnings
 warnings.filterwarnings('ignore')
 
-def test_exact_lba_functions():
-    """Test exact LBA mathematical functions"""
-    
-    print("Testing exact LBA mathematical functions...")
-    
-    try:
-        # Test parameters
-        rt = np.array([0.5, 0.8, 1.2])
-        A = 0.3
-        b = 0.8  
-        v = 1.5
-        s = 1.0
-        
-        # Test exact functions
-        pdf_vals = exact_lba_pdf(rt, A, b, v, s)
-        cdf_vals = exact_lba_cdf(rt, A, b, v, s)
-        
-        print(f"LBA PDF values: {pdf_vals}")
-        print(f"LBA CDF values: {cdf_vals}")
-        
-        # Sanity checks
-        if (np.all(pdf_vals >= 0) and np.all(cdf_vals >= 0) and 
-            np.all(cdf_vals <= 1) and np.all(np.isfinite(pdf_vals))):
-            print("✅ Exact LBA functions working correctly")
-            return True
-        else:
-            print("❌ LBA functions producing invalid values")
-            return False
-            
-    except Exception as e:
-        print(f"❌ Exact LBA function test failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def exact_lba_pdf(rt, A, b, v, s):
+def load_and_prepare_grt_data(file_path, max_participants=None, max_trials_per_participant=None):
     """
-    Exact LBA probability density function
-    
-    Based on Brown & Heathcote (2008), Equation 1
-    
-    Parameters:
-    -----------
-    rt : array_like
-        Reaction times
-    A : float
-        Start point upper bound (uniform distribution from 0 to A)
-    b : float  
-        Decision threshold (must be > A)
-    v : float
-        Drift rate (mean of drift distribution)
-    s : float
-        Drift rate standard deviation
-    
-    Returns:
-    --------
-    pdf : array_like
-        Probability density values
+    Load and prepare GRT data with proper dimensional structure
     """
+    print("Loading and preparing GRT data...")
     
-    rt = np.asarray(rt, dtype=np.float64)
+    # Load data
+    df = pd.read_csv(file_path)
+    print(f"Original data: {len(df)} trials from {df['participant'].nunique()} participants")
     
-    # Ensure valid parameters
-    if b <= A:
-        return np.zeros_like(rt)
-    if s <= 0 or A < 0 or any(rt <= 0):
-        return np.zeros_like(rt)
+    # Data cleaning
+    df = df[(df['RT'] > 0.1) & (df['RT'] < 3.0)]
+    print(f"After RT filtering: {len(df)} trials")
     
-    # Exact LBA PDF formula (Brown & Heathcote, 2008)
-    # f(t) = (1/A) * [v*Φ((v*t-b)/s*√t) - v*Φ((v*t-A)/s*√t) + s*φ((v*t-b)/s*√t)*√t - s*φ((v*t-A)/s*√t)*√t]
+    # Optional: limit for testing
+    if max_participants:
+        participants = sorted(df['participant'].unique())[:max_participants]
+        df = df[df['participant'].isin(participants)]
+        print(f"Limited to {max_participants} participants: {len(df)} trials")
     
-    sqrt_t = np.sqrt(rt)
-    v_t = v * rt
+    if max_trials_per_participant:
+        df = df.groupby('participant').head(max_trials_per_participant).reset_index(drop=True)
+        print(f"Limited to {max_trials_per_participant} trials per participant: {len(df)} trials")
     
-    # Arguments for normal CDF and PDF
-    z1 = (v_t - b) / (s * sqrt_t)  # Upper boundary
-    z2 = (v_t - A) / (s * sqrt_t)  # Lower boundary (start point)
+    # Create participant indices
+    participants = sorted(df['participant'].unique())
+    participant_map = {p: i for i, p in enumerate(participants)}
+    df['participant_idx'] = df['participant'].map(participant_map)
     
-    # Normal CDF and PDF values
-    Phi_z1 = stats.norm.cdf(z1)
-    Phi_z2 = stats.norm.cdf(z2)
-    phi_z1 = stats.norm.pdf(z1)
-    phi_z2 = stats.norm.pdf(z2)
+    # GRT dimensional structure
+    # Channel1 = Left dimension (0=Low, 1=High)
+    # Channel2 = Right dimension (0=Low, 1=High)
+    df['left_dim'] = df['Chanel1'].astype(int)
+    df['right_dim'] = df['Chanel2'].astype(int)
+    df['stimulus'] = df['stim_condition'].astype(int)
+    df['response'] = df['Response'].astype(int)
     
-    # Exact LBA PDF
-    term1 = v * (Phi_z1 - Phi_z2)
-    term2 = s * (phi_z1 - phi_z2) / sqrt_t
+    # Verify GRT mapping
+    print(f"\nGRT Stimulus Mapping Verification:")
+    for stim in range(4):
+        stim_data = df[df['stimulus'] == stim].iloc[0]
+        print(f"Stimulus {stim}: Left={stim_data['left_dim']}, Right={stim_data['right_dim']}")
     
-    pdf = (1 / A) * (term1 + term2)
+    # Convert to arrays for PyMC
+    data = {
+        'rt': df['RT'].values.astype(np.float32),
+        'response': df['response'].values.astype(np.int32),
+        'stimulus': df['stimulus'].values.astype(np.int32),
+        'left_dim': df['left_dim'].values.astype(np.int32),
+        'right_dim': df['right_dim'].values.astype(np.int32),
+        'participant_idx': df['participant_idx'].values.astype(np.int32),
+        'n_participants': len(participants),
+        'n_trials': len(df),
+        'participants': participants
+    }
     
-    # Handle numerical issues
-    pdf = np.maximum(pdf, 1e-10)
-    pdf = np.where(np.isfinite(pdf), pdf, 1e-10)
+    # Calculate accuracy
+    accuracy = np.mean(df['response'] == df['stimulus'])
+    print(f"\nDataset summary:")
+    print(f"  Participants: {data['n_participants']}")
+    print(f"  Total trials: {data['n_trials']}")
+    print(f"  Overall accuracy: {accuracy:.3f}")
     
-    return pdf
+    return data, df
 
-def exact_lba_cdf(rt, A, b, v, s):
+def hierarchical_grt_lba_model(data, test_mode=True):
     """
-    Exact LBA cumulative distribution function
+    Hierarchical GRT-LBA model testing three GRT assumptions
     
-    Based on Brown & Heathcote (2008), Equation 2
+    Architecture:
+    1. Left dimension processing (2 accumulators: Low/High)
+    2. Right dimension processing (2 accumulators: Low/High) 
+    3. Combined 4-accumulator race
     
-    Parameters same as exact_lba_pdf
-    
-    Returns:
-    --------
-    cdf : array_like
-        Cumulative probability values
+    GRT Assumptions tested:
+    1. Decision Boundary Independence
+    2. Perceptual Separability
+    3. Perceptual Independence
     """
+    print("Building hierarchical GRT-LBA model...")
     
-    rt = np.asarray(rt, dtype=np.float64)
-    
-    # Ensure valid parameters
-    if b <= A:
-        return np.zeros_like(rt)
-    if s <= 0 or A < 0:
-        return np.zeros_like(rt)
-    
-    # For very small times, CDF is approximately 0
-    if np.any(rt <= 0):
-        return np.zeros_like(rt)
-    
-    sqrt_t = np.sqrt(rt)
-    v_t = v * rt
-    
-    # Arguments for normal CDF
-    z1 = (v_t - b) / (s * sqrt_t)
-    z2 = (v_t - A) / (s * sqrt_t) 
-    
-    # Exact LBA CDF calculation
-    # More complex than PDF, involves integration
-    # Using numerical approximation for stability
-    
-    # Simplified exact form (can be made more precise)
-    Phi_z1 = stats.norm.cdf(z1)
-    Phi_z2 = stats.norm.cdf(z2)
-    
-    # This is a simplified version; full exact formula is more complex
-    # but this captures the essential mathematical structure
-    cdf_approx = (Phi_z1 - Phi_z2)
-    
-    # Ensure valid CDF properties
-    cdf_approx = np.clip(cdf_approx, 0, 1)
-    
-    return cdf_approx
+    if test_mode:
+        # Use subset for testing (3 participants, 100 trials each)
+        n_test_participants = min(3, data['n_participants'])
+        n_test_trials_per_p = 100
+        
+        # Select subset
+        subset_mask = data['participant_idx'] < n_test_participants
+        subset_indices = np.where(subset_mask)[0]
+        
+        # Further limit trials per participant
+        final_indices = []
+        for p in range(n_test_participants):
+            p_indices = subset_indices[data['participant_idx'][subset_indices] == p]
+            selected = np.random.choice(p_indices, 
+                                      min(n_test_trials_per_p, len(p_indices)), 
+                                      replace=False)
+            final_indices.extend(selected)
+        
+        final_indices = np.array(final_indices)
+        
+        rt_obs = data['rt'][final_indices]
+        response_obs = data['response'][final_indices]
+        stimulus_obs = data['stimulus'][final_indices]
+        left_dim_obs = data['left_dim'][final_indices]
+        right_dim_obs = data['right_dim'][final_indices]
+        participant_obs = data['participant_idx'][final_indices]
+        
+        n_trials = len(final_indices)
+        n_participants = n_test_participants
+        
+        print(f"Test mode: {n_participants} participants, {n_trials} trials")
+    else:
+        rt_obs = data['rt']
+        response_obs = data['response']
+        stimulus_obs = data['stimulus']
+        left_dim_obs = data['left_dim']
+        right_dim_obs = data['right_dim']
+        participant_obs = data['participant_idx']
+        n_trials = data['n_trials']
+        n_participants = data['n_participants']
+        
+        print(f"Full mode: {n_participants} participants, {n_trials} trials")
 
-def exact_lba_logpdf(rt, A, b, v, s):
-    """Log probability density function for numerical stability"""
-    pdf = exact_lba_pdf(rt, A, b, v, s)
-    return np.log(np.maximum(pdf, 1e-10))
-
-def exact_lba_survival(rt, A, b, v, s):
-    """
-    Exact LBA survival function: S(t) = 1 - F(t)
-    
-    This is what we need for the "losing" accumulators in the race
-    """
-    cdf = exact_lba_cdf(rt, A, b, v, s)
-    return 1 - cdf
-
-def exact_lba_log_survival(rt, A, b, v, s):
-    """Log survival function for numerical stability"""
-    survival = exact_lba_survival(rt, A, b, v, s)
-    return np.log(np.maximum(survival, 1e-10))
-
-def test_exact_lba_in_pymc():
-    """Test exact LBA implementation in PyMC"""
-    
-    print("\nTesting exact LBA in PyMC...")
-    
-    try:
-        import pymc as pm
-        import pytensor.tensor as pt
-        from pytensor.tensor import extra_ops
+    with pm.Model() as model:
         
-        # Generate test data with known parameters
-        np.random.seed(42)
-        n_trials = 100
+        # =============================================
+        # HIERARCHICAL GROUP-LEVEL PARAMETERS
+        # =============================================
         
-        # True parameters
-        true_A = 0.3
-        true_b = 0.8
-        true_v1 = 1.5
-        true_v2 = 1.0
-        true_s = 1.0
-        true_t0 = 0.15
+        print("Setting up hierarchical parameters...")
         
-        # Simulate exact LBA data
-        responses = []
-        rts = []
+        # Basic LBA parameters (group level)
+        A_mu = pm.HalfNormal('A_mu', sigma=0.3)  # Start point upper bound
+        A_sigma = pm.HalfNormal('A_sigma', sigma=0.1)
         
-        for trial in range(n_trials):
-            # Simulate two accumulator race
-            times = []
+        b_excess_mu = pm.HalfNormal('b_excess_mu', sigma=0.4)  # Threshold above A
+        b_excess_sigma = pm.HalfNormal('b_excess_sigma', sigma=0.2)
+        
+        t0_mu = pm.HalfNormal('t0_mu', sigma=0.2)  # Non-decision time
+        t0_sigma = pm.HalfNormal('t0_sigma', sigma=0.05)
+        
+        # Drift rate parameters (group level)
+        drift_base_mu = pm.HalfNormal('drift_base_mu', sigma=1.0)  # Base drift rate
+        drift_base_sigma = pm.HalfNormal('drift_base_sigma', sigma=0.3)
+        
+        drift_correct_boost_mu = pm.HalfNormal('drift_correct_boost_mu', sigma=0.8)  # Boost for correct response
+        drift_correct_boost_sigma = pm.HalfNormal('drift_correct_boost_sigma', sigma=0.3)
+        
+        # =============================================
+        # GRT VIOLATION PARAMETERS (GROUP LEVEL)
+        # =============================================
+        
+        # 1. DECISION BOUNDARY INDEPENDENCE VIOLATIONS
+        # Left boundary affected by right dimension
+        boundary_left_by_right_mu = pm.Normal('boundary_left_by_right_mu', mu=0, sigma=0.2)
+        boundary_left_by_right_sigma = pm.HalfNormal('boundary_left_by_right_sigma', sigma=0.1)
+        
+        # Right boundary affected by left dimension  
+        boundary_right_by_left_mu = pm.Normal('boundary_right_by_left_mu', mu=0, sigma=0.2)
+        boundary_right_by_left_sigma = pm.HalfNormal('boundary_right_by_left_sigma', sigma=0.1)
+        
+        # 2. PERCEPTUAL SEPARABILITY VIOLATIONS
+        # Left perception affected by right stimulus
+        separability_left_by_right_mu = pm.Normal('separability_left_by_right_mu', mu=0, sigma=0.3)
+        separability_left_by_right_sigma = pm.HalfNormal('separability_left_by_right_sigma', sigma=0.2)
+        
+        # Right perception affected by left stimulus
+        separability_right_by_left_mu = pm.Normal('separability_right_by_left_mu', mu=0, sigma=0.3)
+        separability_right_by_left_sigma = pm.HalfNormal('separability_right_by_left_sigma', sigma=0.2)
+        
+        # 3. PERCEPTUAL INDEPENDENCE VIOLATIONS
+        # Correlation between left and right evidence
+        independence_correlation_mu = pm.Normal('independence_correlation_mu', mu=0, sigma=0.3)
+        independence_correlation_sigma = pm.HalfNormal('independence_correlation_sigma', sigma=0.2)
+        
+        # =============================================
+        # INDIVIDUAL PARTICIPANT PARAMETERS
+        # =============================================
+        
+        print("Setting up individual parameters...")
+        
+        # Individual LBA parameters
+        A_raw = pm.Normal('A_raw', mu=0, sigma=1, shape=n_participants)
+        A = pm.Deterministic('A', pm.math.maximum(A_mu + A_sigma * A_raw, 0.05))
+        
+        b_excess_raw = pm.Normal('b_excess_raw', mu=0, sigma=1, shape=n_participants)
+        b_excess = pm.Deterministic('b_excess', pm.math.maximum(b_excess_mu + b_excess_sigma * b_excess_raw, 0.05))
+        b = pm.Deterministic('b', A + b_excess)
+        
+        t0_raw = pm.Normal('t0_raw', mu=0, sigma=1, shape=n_participants)
+        t0 = pm.Deterministic('t0', pm.math.maximum(t0_mu + t0_sigma * t0_raw, 0.05))
+        
+        drift_base_raw = pm.Normal('drift_base_raw', mu=0, sigma=1, shape=n_participants)
+        drift_base = pm.Deterministic('drift_base', pm.math.maximum(drift_base_mu + drift_base_sigma * drift_base_raw, 0.1))
+        
+        drift_correct_boost_raw = pm.Normal('drift_correct_boost_raw', mu=0, sigma=1, shape=n_participants)
+        drift_correct_boost = pm.Deterministic('drift_correct_boost', 
+                                             pm.math.maximum(drift_correct_boost_mu + drift_correct_boost_sigma * drift_correct_boost_raw, 0.1))
+        
+        # Individual GRT violation parameters
+        boundary_left_by_right_raw = pm.Normal('boundary_left_by_right_raw', mu=0, sigma=1, shape=n_participants)
+        boundary_left_by_right = pm.Deterministic('boundary_left_by_right', 
+                                                 boundary_left_by_right_mu + boundary_left_by_right_sigma * boundary_left_by_right_raw)
+        
+        boundary_right_by_left_raw = pm.Normal('boundary_right_by_left_raw', mu=0, sigma=1, shape=n_participants)
+        boundary_right_by_left = pm.Deterministic('boundary_right_by_left',
+                                                 boundary_right_by_left_mu + boundary_right_by_left_sigma * boundary_right_by_left_raw)
+        
+        separability_left_by_right_raw = pm.Normal('separability_left_by_right_raw', mu=0, sigma=1, shape=n_participants)
+        separability_left_by_right = pm.Deterministic('separability_left_by_right',
+                                                     separability_left_by_right_mu + separability_left_by_right_sigma * separability_left_by_right_raw)
+        
+        separability_right_by_left_raw = pm.Normal('separability_right_by_left_raw', mu=0, sigma=1, shape=n_participants)
+        separability_right_by_left = pm.Deterministic('separability_right_by_left',
+                                                     separability_right_by_left_mu + separability_right_by_left_sigma * separability_right_by_left_raw)
+        
+        independence_correlation_raw = pm.Normal('independence_correlation_raw', mu=0, sigma=1, shape=n_participants)
+        independence_correlation = pm.Deterministic('independence_correlation',
+                                                   independence_correlation_mu + independence_correlation_sigma * independence_correlation_raw)
+        
+        # =============================================
+        # GRT-LBA LIKELIHOOD FUNCTION
+        # =============================================
+        
+        print("Setting up GRT-LBA likelihood...")
+        
+        def grt_lba_likelihood():
+            """
+            Exact GRT-LBA likelihood with dimensional architecture
+            """
+            rt_decision = pt.maximum(rt_obs - t0[participant_obs], 0.01)
+            total_loglik = 0.0
             
-            for acc, v in enumerate([true_v1, true_v2]):
-                # Sample start point
-                start = np.random.uniform(0, true_A)
+            # Process each trial
+            for i in range(n_trials):
+                rt_i = rt_decision[i]
+                response_i = response_obs[i]
+                stimulus_i = stimulus_obs[i]
+                left_i = left_dim_obs[i]
+                right_i = right_dim_obs[i]
+                participant_i = participant_obs[i]
                 
-                # Sample drift rate
-                drift = np.random.normal(v, true_s)
+                # Get individual parameters for this participant
+                A_i = A[participant_i]
+                b_i = b[participant_i]
+                drift_base_i = drift_base[participant_i]
+                drift_boost_i = drift_correct_boost[participant_i]
                 
-                # Time to threshold
-                if drift > 0:
-                    time_to_bound = (true_b - start) / drift
-                else:
-                    time_to_bound = 10.0  # Very slow
+                # GRT violation parameters for this participant
+                bound_lr_i = boundary_left_by_right[participant_i]
+                bound_rl_i = boundary_right_by_left[participant_i]
+                sep_lr_i = separability_left_by_right[participant_i]
+                sep_rl_i = separability_right_by_left[participant_i]
+                indep_i = independence_correlation[participant_i]
                 
-                times.append(time_to_bound)
-            
-            # Winner determination
-            winner = np.argmin(times)
-            rt = times[winner] + true_t0
-            
-            responses.append(winner)
-            rts.append(rt)
-        
-        responses = np.array(responses, dtype='int32')
-        rts = np.array(rts, dtype='float32')
-        rts = np.clip(rts, 0.2, 3.0)  # Reasonable bounds
-        
-        print(f"Generated {n_trials} exact LBA trials")
-        print(f"Response distribution: {np.bincount(responses)}")
-        print(f"Mean RT: {rts.mean():.3f}s")
-        
-        # Build exact LBA model in PyMC
-        with pm.Model() as exact_lba_model:
-            
-            # LBA parameters with proper constraints
-            A = pm.HalfNormal('A', sigma=0.3)
-            b_excess = pm.HalfNormal('b_excess', sigma=0.3)  
-            b = pm.Deterministic('b', A + b_excess)  # Ensure b > A
-            
-            v1 = pm.HalfNormal('v1', sigma=0.8)
-            v2 = pm.HalfNormal('v2', sigma=0.8)
-            t0 = pm.HalfNormal('t0', sigma=0.1)
-            s = 1.0  # Fixed for identifiability
-            
-            # Custom LBA likelihood using exact mathematics
-            def exact_lba_likelihood():
-                """Exact LBA likelihood computation"""
+                # Compute drift rates for 4 accumulators with GRT effects
+                drift_rates = pt.zeros(4)
                 
-                # Adjust reaction times for non-decision time
-                rt_decision = pt.maximum(rts - t0, 0.01)
+                for acc in range(4):
+                    # Determine accumulator's dimensional preferences
+                    acc_left = acc // 2  # 0,1 -> 0; 2,3 -> 1
+                    acc_right = acc % 2  # 0,2 -> 0; 1,3 -> 1
+                    
+                    # Base drift rate
+                    base_rate = pt.switch(pt.eq(acc, stimulus_i),
+                                        drift_base_i + drift_boost_i,
+                                        drift_base_i)
+                    
+                    # PERCEPTUAL SEPARABILITY violations
+                    # Left perception affected by right stimulus
+                    sep_left_effect = pt.switch(pt.eq(acc_left, left_i),
+                                              sep_lr_i * right_i,  # Enhancement when matching
+                                              -sep_lr_i * right_i)  # Interference when mismatching
+                    
+                    # Right perception affected by left stimulus  
+                    sep_right_effect = pt.switch(pt.eq(acc_right, right_i),
+                                               sep_rl_i * left_i,
+                                               -sep_rl_i * left_i)
+                    
+                    # PERCEPTUAL INDEPENDENCE violations
+                    # Correlation effect when both dimensions match
+                    indep_effect = pt.switch(pt.and_(pt.eq(acc_left, left_i), pt.eq(acc_right, right_i)),
+                                           indep_i,
+                                           0.0)
+                    
+                    # Final drift rate
+                    final_drift = pt.maximum(base_rate + sep_left_effect + sep_right_effect + indep_effect, 0.05)
+                    drift_rates = pt.set_subtensor(drift_rates[acc], final_drift)
                 
-                total_loglik = 0.0
+                # DECISION BOUNDARY INDEPENDENCE violations
+                # Modify thresholds based on irrelevant dimension
+                threshold_left = b_i + bound_lr_i * right_i  # Left threshold affected by right
+                threshold_right = b_i + bound_rl_i * left_i  # Right threshold affected by left
                 
-                # Loop through trials (vectorization possible but complex)
-                for i in range(n_trials):
-                    rt_i = rt_decision[i]
-                    resp_i = responses[i]
-                    
-                    # Drift rates for both accumulators
-                    v_rates = pt.stack([v1, v2])
-                    
-                    # Winner: compute exact LBA PDF
-                    v_winner = v_rates[resp_i]
-                    
-                    # Exact LBA PDF computation in PyTensor
-                    sqrt_t = pt.sqrt(rt_i)
-                    v_t = v_winner * rt_i
-                    
-                    # Normal CDF/PDF arguments
-                    z1 = (v_t - b) / (s * sqrt_t)
-                    z2 = (v_t - A) / (s * sqrt_t)
-                    
-                    # Use PyTensor's implementations
-                    Phi_z1 = 0.5 * (1 + pt.erf(z1 / pt.sqrt(2)))  # Normal CDF
-                    Phi_z2 = 0.5 * (1 + pt.erf(z2 / pt.sqrt(2)))
-                    
-                    phi_z1 = pt.exp(-0.5 * z1**2) / pt.sqrt(2 * np.pi)  # Normal PDF
-                    phi_z2 = pt.exp(-0.5 * z2**2) / pt.sqrt(2 * np.pi)
-                    
-                    # Exact LBA PDF
-                    term1 = v_winner * (Phi_z1 - Phi_z2)
-                    term2 = s * (phi_z1 - phi_z2) / sqrt_t
-                    winner_pdf = (1 / A) * (term1 + term2)
-                    
-                    # Log PDF for winner (with numerical protection)
-                    winner_logpdf = pt.log(pt.maximum(winner_pdf, 1e-10))
-                    
-                    # Loser: compute exact survival function
-                    loser_idx = 1 - resp_i
-                    v_loser = v_rates[loser_idx]
-                    
-                    # Loser survival computation
-                    v_t_loser = v_loser * rt_i
-                    z1_loser = (v_t_loser - b) / (s * sqrt_t)
-                    z2_loser = (v_t_loser - A) / (s * sqrt_t)
-                    
-                    Phi_z1_loser = 0.5 * (1 + pt.erf(z1_loser / pt.sqrt(2)))
-                    Phi_z2_loser = 0.5 * (1 + pt.erf(z2_loser / pt.sqrt(2)))
-                    
-                    loser_cdf = Phi_z1_loser - Phi_z2_loser
-                    loser_survival = 1 - loser_cdf
-                    
-                    # Log survival for loser
-                    loser_log_survival = pt.log(pt.maximum(loser_survival, 1e-10))
-                    
-                    # Total trial likelihood
-                    trial_loglik = winner_logpdf + loser_log_survival
-                    total_loglik += trial_loglik
+                # Apply threshold modifications to appropriate accumulators
+                thresholds = pt.stack([
+                    threshold_left,   # Acc 0: Left-High + Right-Low
+                    b_i,             # Acc 1: Left-Low + Right-Low (baseline)
+                    threshold_right, # Acc 2: Left-Low + Right-High
+                    threshold_left + threshold_right - b_i  # Acc 3: Both affected
+                ])
                 
-                return total_loglik
-            
-            # Add likelihood to model
-            pm.Potential('exact_lba_likelihood', exact_lba_likelihood())
-            
-            # Derived quantities for checking
-            pm.Deterministic('threshold_height', b - A)
-        
-        print("✅ Exact LBA model created successfully")
-        
-        # Test sampling with exact mathematics
-        print("Testing exact LBA sampling...")
-        
-        with exact_lba_model:
-            # Use more careful sampling for exact model
-            trace = pm.sample(
-                draws=50,  # Moderate number for testing
-                tune=30,
-                chains=2,
-                cores=1,
-                target_accept=0.9,  # Higher acceptance for exact model
-                return_inferencedata=True,
-                random_seed=42,
-                progressbar=True,
-                compute_convergence_checks=False
-            )
-        
-        print("✅ Exact LBA sampling completed successfully!")
-        
-        # Parameter recovery analysis
-        posterior = trace.posterior
-        
-        A_est = posterior['A'].values.mean()
-        b_est = posterior['b'].values.mean()
-        v1_est = posterior['v1'].values.mean()
-        v2_est = posterior['v2'].values.mean()
-        t0_est = posterior['t0'].values.mean()
-        
-        print(f"\n📊 EXACT LBA PARAMETER RECOVERY:")
-        print(f"A: {A_est:.3f} (true: {true_A:.3f})")
-        print(f"b: {b_est:.3f} (true: {true_b:.3f})")
-        print(f"v1: {v1_est:.3f} (true: {true_v1:.3f})")
-        print(f"v2: {v2_est:.3f} (true: {true_v2:.3f})")
-        print(f"t0: {t0_est:.3f} (true: {true_t0:.3f})")
-        
-        # Check convergence
-        rhat_A = float(trace.posterior['A'].values.var())
-        print(f"Sampling quality (A variance): {rhat_A:.4f}")
-        
-        return True
-        
-    except Exception as e:
-        print(f"❌ Exact LBA PyMC test failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def test_exact_grt_lba():
-    """Test exact LBA with full GRT structure"""
-    
-    print("\nTesting exact GRT-LBA model...")
-    
-    try:
-        import pymc as pm
-        import pytensor.tensor as pt
-        
-        # Generate GRT data with exact LBA simulation
-        np.random.seed(42)
-        n_trials = 120
-        
-        # GRT 2x2 stimulus design
-        left_dim = np.random.choice([0, 1], n_trials)
-        right_dim = np.random.choice([0, 1], n_trials)
-        stimulus_code = left_dim * 2 + right_dim
-        
-        # True GRT parameters
-        true_separability = 0.12  # Moderate separability violation
-        true_independence = 0.08  # Small independence violation
-        
-        # LBA parameters
-        true_A = 0.25
-        true_b = 0.75
-        true_drift_base = 0.8
-        true_drift_boost = 0.6
-        true_t0 = 0.12
-        true_s = 1.0
-        
-        # Simulate exact GRT-LBA data
-        responses = []
-        rts = []
-        
-        for trial in range(n_trials):
-            left_val = left_dim[trial]
-            right_val = right_dim[trial]
-            stim_code = stimulus_code[trial]
-            
-            # Compute drift rates for 4 accumulators with GRT effects
-            drift_rates = []
-            
-            for acc in range(4):
-                acc_left = acc // 2
-                acc_right = acc % 2
+                # Exact LBA likelihood computation
+                v_winner = drift_rates[response_i]
+                threshold_winner = thresholds[response_i]
                 
-                # Base drift rate
-                if acc == stim_code:
-                    base_drift = true_drift_base + true_drift_boost
-                else:
-                    base_drift = true_drift_base
+                sqrt_t = pt.sqrt(rt_i)
+                v_t = v_winner * rt_i
                 
-                # Separability violation: cross-dimensional interference
-                sep_effect = 0
-                if acc_left != left_val:
-                    sep_effect += true_separability * right_val
-                if acc_right != right_val:
-                    sep_effect += true_separability * left_val
+                # Winner PDF
+                z1_win = (v_t - threshold_winner) / sqrt_t
+                z2_win = (v_t - A_i) / sqrt_t
                 
-                # Independence violation: correlation effect
-                indep_effect = 0
-                if acc == stim_code and left_val == right_val:
-                    indep_effect = true_independence
+                Phi_z1_win = 0.5 * (1 + pt.erf(z1_win / pt.sqrt(2)))
+                Phi_z2_win = 0.5 * (1 + pt.erf(z2_win / pt.sqrt(2)))
+                phi_z1_win = pt.exp(-0.5 * z1_win**2) / pt.sqrt(2 * np.pi)
+                phi_z2_win = pt.exp(-0.5 * z2_win**2) / pt.sqrt(2 * np.pi)
                 
-                final_drift = base_drift + sep_effect + indep_effect
-                drift_rates.append(max(final_drift, 0.1))
-            
-            # Simulate LBA race with exact mathematics
-            times = []
-            for acc in range(4):
-                # Start point
-                start = np.random.uniform(0, true_A)
+                term1 = v_winner * (Phi_z1_win - Phi_z2_win)
+                term2 = (phi_z1_win - phi_z2_win) / sqrt_t
+                winner_pdf = (1 / A_i) * (term1 + term2)
+                winner_logpdf = pt.log(pt.maximum(winner_pdf, 1e-10))
                 
-                # Drift sample
-                drift = np.random.normal(drift_rates[acc], true_s)
-                
-                # Time to boundary
-                if drift > 0:
-                    time = (true_b - start) / drift
-                else:
-                    time = 10.0
-                
-                times.append(time)
-            
-            # Winner takes all
-            winner = np.argmin(times)
-            rt = times[winner] + true_t0
-            
-            responses.append(winner)
-            rts.append(rt)
-        
-        responses = np.array(responses, dtype='int32')
-        rts = np.array(rts, dtype='float32')
-        rts = np.clip(rts, 0.15, 2.5)
-        
-        left_dim = left_dim.astype('float32')
-        right_dim = right_dim.astype('float32')
-        stimulus_code = stimulus_code.astype('int32')
-        
-        accuracy = np.mean(responses == stimulus_code)
-        print(f"Generated {n_trials} exact GRT trials, accuracy: {accuracy:.3f}")
-        
-        # Build exact GRT-LBA model
-        with pm.Model() as exact_grt_model:
-            
-            # GRT assumption parameters
-            separability_lr = pm.Normal('separability_lr', mu=0, sigma=0.2)
-            separability_rl = pm.Normal('separability_rl', mu=0, sigma=0.2)
-            independence_corr = pm.Normal('independence_corr', mu=0, sigma=0.2)
-            
-            # LBA parameters
-            A = pm.HalfNormal('A', sigma=0.2)
-            b_excess = pm.HalfNormal('b_excess', sigma=0.3)
-            b = pm.Deterministic('b', A + b_excess)
-            
-            drift_base = pm.HalfNormal('drift_base', sigma=0.5)
-            drift_boost = pm.HalfNormal('drift_boost', sigma=0.4)
-            t0 = pm.HalfNormal('t0', sigma=0.08)
-            s = 1.0  # Fixed
-            
-            # Exact GRT-LBA likelihood
-            def exact_grt_lba_likelihood():
-                rt_decision = pt.maximum(rts - t0, 0.01)
-                total_loglik = 0.0
-                
-                for i in range(n_trials):
-                    rt_i = rt_decision[i]
-                    resp_i = responses[i]
-                    left_i = left_dim[i]
-                    right_i = right_dim[i]
-                    stim_i = stimulus_code[i]
-                    
-                    # Compute exact drift rates with GRT effects
-                    drift_rates = pt.zeros(4)
-                    
-                    for acc in range(4):
-                        acc_left = acc // 2
-                        acc_right = acc % 2
+                # Losers survival
+                losers_log_survival = 0.0
+                for acc in range(4):
+                    if acc != response_i:
+                        v_loser = drift_rates[acc]
+                        threshold_loser = thresholds[acc]
+                        v_t_loser = v_loser * rt_i
                         
-                        # Base drift
-                        base = pt.switch(pt.eq(acc, stim_i), 
-                                       drift_base + drift_boost, 
-                                       drift_base)
+                        z1_lose = (v_t_loser - threshold_loser) / sqrt_t
+                        z2_lose = (v_t_loser - A_i) / sqrt_t
                         
-                        # Exact separability effects
-                        sep_lr_effect = separability_lr * pt.switch(
-                            pt.neq(acc_left, left_i), right_i, 0.0)
-                        sep_rl_effect = separability_rl * pt.switch(
-                            pt.neq(acc_right, right_i), left_i, 0.0)
+                        Phi_z1_lose = 0.5 * (1 + pt.erf(z1_lose / pt.sqrt(2)))
+                        Phi_z2_lose = 0.5 * (1 + pt.erf(z2_lose / pt.sqrt(2)))
                         
-                        # Exact independence effect
-                        indep_effect = independence_corr * pt.switch(
-                            pt.and_(pt.eq(acc, stim_i), pt.eq(left_i, right_i)), 
-                            1.0, 0.0)
-                        
-                        final_drift = pt.maximum(
-                            base + sep_lr_effect + sep_rl_effect + indep_effect, 
-                            0.05)
-                        
-                        drift_rates = pt.set_subtensor(drift_rates[acc], final_drift)
-                    
-                    # Exact LBA likelihood computation
-                    v_winner = drift_rates[resp_i]
-                    sqrt_t = pt.sqrt(rt_i)
-                    v_t = v_winner * rt_i
-                    
-                    # Winner PDF (exact LBA mathematics)
-                    z1_win = (v_t - b) / (s * sqrt_t)
-                    z2_win = (v_t - A) / (s * sqrt_t)
-                    
-                    Phi_z1_win = 0.5 * (1 + pt.erf(z1_win / pt.sqrt(2)))
-                    Phi_z2_win = 0.5 * (1 + pt.erf(z2_win / pt.sqrt(2)))
-                    phi_z1_win = pt.exp(-0.5 * z1_win**2) / pt.sqrt(2 * np.pi)
-                    phi_z2_win = pt.exp(-0.5 * z2_win**2) / pt.sqrt(2 * np.pi)
-                    
-                    term1 = v_winner * (Phi_z1_win - Phi_z2_win)
-                    term2 = s * (phi_z1_win - phi_z2_win) / sqrt_t
-                    winner_pdf = (1 / A) * (term1 + term2)
-                    winner_logpdf = pt.log(pt.maximum(winner_pdf, 1e-10))
-                    
-                    # Losers survival (exact mathematics)
-                    losers_log_survival = 0.0
-                    for acc in range(4):
-                        if acc != resp_i:
-                            v_loser = drift_rates[acc]
-                            v_t_loser = v_loser * rt_i
-                            
-                            z1_lose = (v_t_loser - b) / (s * sqrt_t)
-                            z2_lose = (v_t_loser - A) / (s * sqrt_t)
-                            
-                      
+                        loser_cdf = Phi_z1_lose - Phi_z2_lose
+                        loser_survival = 1 - loser_cdf
+                        losers_log_survival += pt.log(pt.maximum(loser_survival, 1e-10))
+                
+                # Total trial likelihood
+                trial_loglik = winner_logpdf + losers_log_survival
+                total_loglik += trial_loglik
+            
+            return total_loglik
+        
+        # Add likelihood to model
+        pm.Potential('grt_lba_likelihood', grt_lba_likelihood())
+        
+        # =============================================
+        # DERIVED QUANTITIES FOR INTERPRETATION
+        # =============================================
+        
+        # Group-level GRT assumption tests
+        pm.Deterministic('boundary_independence_violation', 
+                        pt.sqrt(boundary_left_by_right_mu**2 + boundary_right_by_left_mu**2))
+        
+        pm.Deterministic('perceptual_separability_violation',
+                        pt.sqrt(separability_left_by_right_mu**2 + separability_right_by_left_mu**2))
+        
+        pm.Deterministic('perceptual_independence_violation',
+                        pt.abs(independence_correlation_mu))
+        
+        print("Model setup complete!")
+        
+    return model
+
+def run_grt_analysis(data_file, test_mode=True, n_samples=200, n_chains=2):
+    """
+    Run complete GRT-LBA analysis
+    """
+    print("=" * 60)
+    print("HIERARCHICAL GRT-LBA ANALYSIS")
+    print("=" * 60)
+    
+    # Load data
+    data, df = load_and_prepare_grt_data(data_file, 
+                                        max_participants=5 if test_mode else None,
+                                        max_trials_per_participant=150 if test_mode else None)
+    
+    # Build model
+    model = hierarchical_grt_lba_model(data, test_mode=test_mode)
+    
+    # Sample
+    print(f"\nStarting MCMC sampling...")
+    print(f"Samples: {n_samples}, Chains: {n_chains}")
+    
+    with model:
+        trace = pm.sample(
+            draws=n_samples,
+            tune=n_samples//2,
+            chains=n_chains,
+            cores=1,
+            target_accept=0.85,
+            return_inferencedata=True,
+            progressbar=True,
+            random_seed=42
+        )
+    
+    print("✅ Sampling completed!")
+    
+    # Analysis
+    print("\n" + "=" * 60)
+    print("GRT ASSUMPTION TEST RESULTS")
+    print("=" * 60)
+    
+    # Extract key parameters
+    posterior = trace.posterior
+    
+    # Test results
+    boundary_violation = posterior['boundary_independence_violation'].values.mean()
+    separability_violation = posterior['perceptual_separability_violation'].values.mean()
+    independence_violation = posterior['perceptual_independence_violation'].values.mean()
+    
+    print(f"\n1. DECISION BOUNDARY INDEPENDENCE:")
+    print(f"   Violation magnitude: {boundary_violation:.4f}")
+    print(f"   {'❌ VIOLATED' if boundary_violation > 0.1 else '✅ SATISFIED'}")
+    
+    print(f"\n2. PERCEPTUAL SEPARABILITY:")
+    print(f"   Violation magnitude: {separability_violation:.4f}")
+    print(f"   {'❌ VIOLATED' if separability_violation > 0.1 else '✅ SATISFIED'}")
+    
+    print(f"\n3. PERCEPTUAL INDEPENDENCE:")
+    print(f"   Violation magnitude: {independence_violation:.4f}")
+    print(f"   {'❌ VIOLATED' if independence_violation > 0.1 else '✅ SATISFIED'}")
+    
+    return trace, model, data
+
+# Example usage
+if __name__ == "__main__":
+    # Run analysis
+    trace, model, data = run_grt_analysis('GRT_LBA.csv', test_mode=True)
