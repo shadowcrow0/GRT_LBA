@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Individual Subject GRT-LBA Model Analysis - FIXED VERSION
+Individual Subject GRT-LBA Model Analysis - JSON SERIALIZATION FIX
 Each subject gets their own Bayesian LBA analysis, then results are integrated
 Includes sigma matrix analysis for each individual and combined results
 
-MAIN FIX: Vectorized LBA likelihood function to avoid tensor-to-int conversion issues
+MAIN FIXES: 
+1. Vectorized LBA likelihood function to avoid tensor-to-int conversion issues
+2. JSON serialization fix for NumPy types
 """
 
 import numpy as np
@@ -21,6 +23,33 @@ import pickle
 import os
 from pathlib import Path
 warnings.filterwarnings('ignore')
+
+def convert_numpy_types(obj):
+    """
+    Recursively convert NumPy types to Python native types for JSON serialization
+    """
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(convert_numpy_types(item) for item in obj)
+    else:
+        return obj
+
+def safe_json_dump(data, filename):
+    """
+    Safely dump data to JSON with NumPy type conversion
+    """
+    converted_data = convert_numpy_types(data)
+    with open(filename, 'w') as f:
+        json.dump(converted_data, f, indent=2)
 
 def grt_dbt(stimloc, db, sp, coactive=False):
     """
@@ -240,7 +269,7 @@ def compute_sigma_matrix(trace, param_names=['db1', 'db2', 'sp1', 'sp2']):
     return sigma_matrix, correlation_matrix, available_params
 
 class IndividualSubjectGRTLBA:
-    """Individual Subject GRT-LBA Analysis with FIXED likelihood function"""
+    """Individual Subject GRT-LBA Analysis with FIXED likelihood function and JSON serialization"""
     
     def __init__(self, csv_file='GRT_LBA.csv'):
         """Initialize with data loading"""
@@ -416,7 +445,7 @@ class IndividualSubjectGRTLBA:
             # Analyze results for this subject
             results = self.analyze_subject_results(trace, subject_id)
             
-            # Save individual results
+            # Save individual results - FIXED JSON SERIALIZATION
             self.save_individual_results(trace, results, subject_id)
             
             return trace
@@ -527,11 +556,10 @@ class IndividualSubjectGRTLBA:
         return independence_tests
     
     def save_individual_results(self, trace, results, subject_id):
-        """Save individual subject results"""
-        # Save JSON results
+        """Save individual subject results - FIXED JSON SERIALIZATION"""
+        # Save JSON results with NumPy type conversion
         results_file = self.results_dir / f'subject_{subject_id}_results.json'
-        with open(results_file, 'w') as f:
-            json.dump(results, f, indent=2)
+        safe_json_dump(results, results_file)
         
         # Save trace as pickle
         trace_file = self.results_dir / f'subject_{subject_id}_trace.pkl'
@@ -695,7 +723,7 @@ class IndividualSubjectGRTLBA:
             'model_convergence_rate': self.compute_convergence_rate()
         }
         
-        # Save combined results
+        # Save combined results with safe JSON serialization
         self.save_combined_results()
         
         # Print summary
@@ -739,10 +767,9 @@ class IndividualSubjectGRTLBA:
         return float(convergent_count / total_count) if total_count > 0 else None
     
     def save_combined_results(self):
-        """Save combined results to file"""
+        """Save combined results to file with safe JSON serialization"""
         combined_file = self.results_dir / 'combined_results.json'
-        with open(combined_file, 'w') as f:
-            json.dump(self.combined_results, f, indent=2)
+        safe_json_dump(self.combined_results, combined_file)
         
         print(f"✓ Combined results saved to {combined_file}")
     
