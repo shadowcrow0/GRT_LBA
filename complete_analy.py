@@ -545,42 +545,173 @@ class GRTAssumptionTester:
                     hdi = az.hdi(trace.posterior[param], hdi_prob=0.95)
                     print(f"  {name}: {mean_val:.3f} [{float(hdi.low):.3f}, {float(hdi.high):.3f}]")
     
-    def run_all_tests(self, max_participants=3, max_trials=30):
-        """Run all three GRT assumption tests"""
-        print("RUNNING ALL GRT ASSUMPTION TESTS")
-        print("="*60)
-        
-        print(f"Test configuration:")
-        print(f"  Max participants: {max_participants}")
-        print(f"  Max trials per participant: {max_trials}")
-        
-        # Test each assumption
-        pi_result = self.test_perceptual_independence(max_participants, max_trials)
-        ps_result = self.test_perceptual_separability(max_participants, max_trials)
-        ds_result = self.test_decisional_separability(max_participants, max_trials)
-        
-        # Compare models
-        self.compare_assumptions()
-        
-        return {
-            'PI': pi_result,
-            'PS': ps_result, 
-            'DS': ds_result
-        }
-
-# Example usage
-if __name__ == "__main__":
-    # Initialize the GRT tester
-    grt_tester = GRTAssumptionTester('GRT_LBA.csv')
-    
-    # Run all tests with small dataset for demonstration
-    results = grt_tester.run_all_tests(max_participants=2, max_trials=20)
-    
+def compare_assumptions(self):
+    """Compare the three GRT assumption models"""
     print("\n" + "="*60)
-    print("SUMMARY")
+    print("COMPARING GRT ASSUMPTION MODELS")
     print("="*60)
-    print("Successfully implemented Bayesian LBA models for testing:")
-    print("1. Perceptual Independence (PI)")
-    print("2. Perceptual Separability (PS)")
-    print("3. Decisional Separability (DS)")
-    print("\nEach model is stored separately and can be compared using model selection criteria.")
+    
+    models = {}
+    traces = {}
+    
+    if hasattr(self, 'pi_trace'):
+        models['PI'] = self.pi_model
+        traces['PI'] = self.pi_trace
+        
+    if hasattr(self, 'ps_trace'):
+        models['PS'] = self.ps_model
+        traces['PS'] = self.ps_trace
+        
+    if hasattr(self, 'ds_trace'):
+        models['DS'] = self.ds_model
+        traces['DS'] = self.ds_trace
+    
+    if len(models) < 2:
+        print("Need at least 2 successful models for comparison")
+        return
+    
+    print(f"Comparing {len(models)} models: {list(models.keys())}")
+    
+    # Model comparison using LOO
+    try:
+        model_comparison = {}
+        for name, trace in traces.items():
+            print(f"Computing LOO for {name} model...")
+            model_comparison[name] = az.loo(trace)
+        
+        # Create comparison dataframe
+        comparison_df = az.compare(model_comparison)
+        print("\nModel Comparison (LOO):")
+        print(comparison_df)
+        
+    except Exception as e:
+        print(f"Model comparison failed: {e}")
+    
+    # Parameter comparison - FIXED VERSION
+    print("\nKey Parameter Comparisons:")
+    for param in ['v1_mu', 'v2_mu', 'A_mu']:
+        print(f"\n{param}:")
+        for name, trace in traces.items():
+            if param in trace.posterior:
+                mean_val = float(trace.posterior[param].mean())
+                hdi = az.hdi(trace.posterior[param], hdi_prob=0.95)
+                
+                # FIX: Handle different ArviZ versions and HDI return formats
+                try:
+                    # Try the newer format first (ArviZ >= 0.12)
+                    if hasattr(hdi, 'values') and hdi.values.ndim == 1:
+                        # HDI returns array with [lower, upper]
+                        lower_bound = float(hdi.values[0])
+                        upper_bound = float(hdi.values[1])
+                    elif hasattr(hdi, 'sel'):
+                        # Alternative: use .sel() method for coordinate selection
+                        lower_bound = float(hdi.sel(hdi_coord='lower'))
+                        upper_bound = float(hdi.sel(hdi_coord='higher'))
+                    else:
+                        # Last resort: try to extract from coordinates
+                        coords = list(hdi.coords.keys())
+                        if 'hdi' in coords:
+                            hdi_vals = hdi.values
+                            lower_bound = float(hdi_vals[0])
+                            upper_bound = float(hdi_vals[1])
+                        else:
+                            # If all else fails, use quantiles as approximation
+                            samples = trace.posterior[param].values.flatten()
+                            lower_bound = float(np.percentile(samples, 2.5))
+                            upper_bound = float(np.percentile(samples, 97.5))
+                    
+                    print(f"  {name}: {mean_val:.3f} [{lower_bound:.3f}, {upper_bound:.3f}]")
+                    
+                except Exception as hdi_error:
+                    # Fallback: use simple quantiles
+                    samples = trace.posterior[param].values.flatten()
+                    lower_bound = float(np.percentile(samples, 2.5))
+                    upper_bound = float(np.percentile(samples, 97.5))
+                    print(f"  {name}: {mean_val:.3f} [{lower_bound:.3f}, {upper_bound:.3f}] (using quantiles)")
+                    print(f"    HDI extraction failed: {hdi_error}")
+
+# Alternative robust HDI extraction function you can add to your class:
+def extract_hdi_bounds(self, trace, param, prob=0.95):
+    """
+    Robust HDI extraction that handles different ArviZ versions
+    """
+    try:
+        hdi = az.hdi(trace.posterior[param], hdi_prob=prob)
+        
+        # Method 1: Try direct value extraction
+        if hasattr(hdi, 'values') and hdi.values.ndim == 1 and len(hdi.values) == 2:
+            return float(hdi.values[0]), float(hdi.values[1])
+        
+        # Method 2: Try coordinate-based extraction
+        if 'hdi' in hdi.coords:
+            hdi_vals = hdi.values
+            if len(hdi_vals) == 2:
+                return float(hdi_vals[0]), float(hdi_vals[1])
+        
+        # Method 3: Try dimension-based extraction
+        if hdi.ndim == 1 and hdi.size == 2:
+            vals = hdi.values.flatten()
+            return float(vals[0]), float(vals[1])
+            
+    except Exception:
+        pass
+    
+    # Fallback: use quantiles
+    samples = trace.posterior[param].values.flatten()
+    alpha = 1 - prob
+    lower_bound = float(np.percentile(samples, 100 * alpha/2))
+    upper_bound = float(np.percentile(samples, 100 * (1 - alpha/2)))
+    return lower_bound, upper_bound
+
+# Modified parameter comparison section using the robust function:
+def compare_assumptions_robust(self):
+    """Compare the three GRT assumption models - robust version"""
+    print("\n" + "="*60)
+    print("COMPARING GRT ASSUMPTION MODELS")
+    print("="*60)
+    
+    models = {}
+    traces = {}
+    
+    if hasattr(self, 'pi_trace'):
+        models['PI'] = self.pi_model
+        traces['PI'] = self.pi_trace
+        
+    if hasattr(self, 'ps_trace'):
+        models['PS'] = self.ps_model
+        traces['PS'] = self.ps_trace
+        
+    if hasattr(self, 'ds_trace'):
+        models['DS'] = self.ds_model
+        traces['DS'] = self.ds_trace
+    
+    if len(models) < 2:
+        print("Need at least 2 successful models for comparison")
+        return
+    
+    print(f"Comparing {len(models)} models: {list(models.keys())}")
+    
+    # Model comparison using LOO
+    try:
+        model_comparison = {}
+        for name, trace in traces.items():
+            print(f"Computing LOO for {name} model...")
+            model_comparison[name] = az.loo(trace)
+        
+        # Create comparison dataframe
+        comparison_df = az.compare(model_comparison)
+        print("\nModel Comparison (LOO):")
+        print(comparison_df)
+        
+    except Exception as e:
+        print(f"Model comparison failed: {e}")
+    
+    # Parameter comparison using robust HDI extraction
+    print("\nKey Parameter Comparisons:")
+    for param in ['v1_mu', 'v2_mu', 'A_mu']:
+        print(f"\n{param}:")
+        for name, trace in traces.items():
+            if param in trace.posterior:
+                mean_val = float(trace.posterior[param].mean())
+                lower_bound, upper_bound = self.extract_hdi_bounds(trace, param)
+                print(f"  {name}: {mean_val:.3f} [{lower_bound:.3f}, {upper_bound:.3f}]")
