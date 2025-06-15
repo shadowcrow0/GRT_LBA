@@ -1,12 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-Individual Subject GRT-LBA Model Analysis - JSON SERIALIZATION FIX
-Each subject gets their own Bayesian LBA analysis, then results are integrated
-Includes sigma matrix analysis for each individual and combined results
+Staged GRT-LBA Analysis with Sigma Matrix Preservation
+階段式 GRT-LBA 分析，保持 Sigma 矩陣計算能力
 
-MAIN FIXES: 
-1. Vectorized LBA likelihood function to avoid tensor-to-int conversion issues
-2. JSON serialization fix for NumPy types
+Purpose / 目的:
+- Implement staged Bayesian modeling to improve MCMC convergence
+- 實施階段式貝葉斯建模來改善 MCMC 收斂性
+- Preserve GRT theoretical framework throughout all stages  
+- 在所有階段中保持 GRT 理論架構
+- Enable Sigma matrix computation for independence testing
+- 能夠計算 Sigma 矩陣進行獨立性檢驗
+
+Strategy / 策略:
+Stage 1: Simplified GRT-LBA (4 parameters / 4個參數)
+Stage 2: Separate perceptual variabilities (5 parameters / 5個參數) 
+Stage 3: Separate LBA thresholds (7 parameters / 7個參數)
+Stage 4: Full model with all parameters (9 parameters / 9個參數)
 """
 
 import numpy as np
@@ -15,319 +24,609 @@ import pymc as pm
 import pytensor.tensor as pt
 import arviz as az
 import scipy.stats as stats
-from scipy.special import logit, expit
 import json
 import time
 import warnings
-import pickle
-import os
 from pathlib import Path
+from typing import Dict, Optional, Tuple, Any
 warnings.filterwarnings('ignore')
 
-def convert_numpy_types(obj):
-    """
-    Recursively convert NumPy types to Python native types for JSON serialization
-    """
-    if isinstance(obj, np.integer):
-        return int(obj)
-    elif isinstance(obj, np.floating):
-        return float(obj)
-    elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    elif isinstance(obj, dict):
-        return {key: convert_numpy_types(value) for key, value in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_numpy_types(item) for item in obj]
-    elif isinstance(obj, tuple):
-        return tuple(convert_numpy_types(item) for item in obj)
-    else:
-        return obj
+# ============================================================================
+# STAGE 1: SIMPLIFIED GRT-LBA MODEL
+# 階段1：簡化的 GRT-LBA 模型
+# ============================================================================
 
-def safe_json_dump(data, filename):
+def stage1_simplified_grt_lba(rt_data: np.ndarray, choice_data: np.ndarray, 
+                             stimloc_data: np.ndarray) -> pm.Model:
     """
-    Safely dump data to JSON with NumPy type conversion
+    Stage 1: Simplified GRT-LBA Model
+    階段1：簡化的 GRT-LBA 模型
+    
+    Purpose / 目的:
+    - Establish baseline convergence with core GRT parameters
+    - 建立核心 GRT 參數的基線收斂性
+    - Reduce dimensionality by constraining similar parameters
+    - 通過約束相似參數來降低維度
+    - Maintain complete GRT→LBA transformation pathway
+    - 維持完整的 GRT→LBA 轉換路徑
+    
+    Parameters Estimated / 估計參數:
+    - db1, db2: Decision boundaries / 決策邊界
+    - sp: Shared perceptual variability / 共享感知變異性 (sp1 = sp2 = sp)
+    - A: LBA start point variability / LBA 起始點變異性
+    - b: Shared threshold offset / 共享閾值偏移 (b1 = b2 = A + b)
+    
+    Fixed Parameters / 固定參數:
+    - s = 0.3: Drift rate variability / 漂移率變異性
+    - t0 = 0.25: Non-decision time / 非決策時間
+    
+    Expected Outcome / 預期結果:
+    - R̂ < 1.1 for all parameters / 所有參數 R̂ < 1.1
+    - Convergence within 10-15 minutes / 10-15分鐘內收斂
     """
-    converted_data = convert_numpy_types(data)
-    with open(filename, 'w') as f:
-        json.dump(converted_data, f, indent=2)
+    
+    print("Stage 1: Building simplified GRT-LBA model...")
+    print("階段1：建立簡化的 GRT-LBA 模型...")
+    print("Parameters / 參數: db1, db2, sp (shared), A, b (shared)")
+    
+    with pm.Model() as model:
+        # ====================================================================
+        # GRT Parameters / GRT 參數
+        # ====================================================================
+        
+        # Decision boundaries / 決策邊界
+        # Purpose: Define decision regions in perceptual space
+        # 目的：定義感知空間中的決策區域
+        db1 = pm.Normal('db1', mu=0.5, sigma=0.3, 
+                       doc="Decision boundary dimension 1 / 決策邊界維度1")
+        db2 = pm.Normal('db2', mu=0.5, sigma=0.3,
+                       doc="Decision boundary dimension 2 / 決策邊界維度2")
+        
+        # Shared perceptual variability / 共享感知變異性
+        # Purpose: Simplify by assuming equal variability across dimensions
+        # 目的：假設各維度變異性相等以簡化模型
+        sp_shared = pm.HalfNormal('sp', sigma=0.2,
+                                 doc="Shared perceptual variability / 共享感知變異性")
+        
+        # Create deterministic copies for Sigma matrix computation
+        # 為 Sigma 矩陣計算創建確定性副本
+        sp1 = pm.Deterministic('sp1', sp_shared,
+                              doc="Perceptual variability dim 1 / 感知變異性維度1")
+        sp2 = pm.Deterministic('sp2', sp_shared,
+                              doc="Perceptual variability dim 2 / 感知變異性維度2")
+        
+        # ====================================================================
+        # LBA Parameters / LBA 參數
+        # ====================================================================
+        
+        # Start point variability / 起始點變異性
+        # Purpose: Controls initial evidence accumulation range
+        # 目的：控制初始證據累積範圍
+        A = pm.HalfNormal('A', sigma=0.3,
+                         doc="LBA start point variability / LBA 起始點變異性")
+        
+        # Shared threshold offset / 共享閾值偏移
+        # Purpose: Simplify by assuming equal decision thresholds
+        # 目的：假設相等決策閾值以簡化模型
+        b_shared = pm.HalfNormal('b', sigma=0.4,
+                                doc="Shared threshold offset / 共享閾值偏移")
+        
+        # Decision thresholds / 決策閾值
+        # Purpose: Define evidence required for decision
+        # 目的：定義決策所需的證據量
+        b1 = pm.Deterministic('b1', A + b_shared,
+                             doc="Threshold accumulator 1 / 閾值累加器1")
+        b2 = pm.Deterministic('b2', A + b_shared,
+                             doc="Threshold accumulator 2 / 閾值累加器2")
+        
+        # Fixed parameters for stability / 為穩定性固定的參數
+        s_fixed = 0.3    # Drift rate variability / 漂移率變異性
+        t0_fixed = 0.25  # Non-decision time / 非決策時間
+        
+        # ====================================================================
+        # GRT→LBA Transformation / GRT→LBA 轉換
+        # ====================================================================
+        
+        # Convert GRT parameters to LBA drift rates
+        # 將 GRT 參數轉換為 LBA 漂移率
+        # This maintains the theoretical connection between GRT and LBA
+        # 這維持了 GRT 和 LBA 之間的理論聯繫
+        
+        pm.Potential('grt_lba_likelihood',
+                    enhanced_vectorized_lba_loglik(
+                        rt_data, choice_data, stimloc_data,
+                        db1, db2, sp1, sp2, A, b1, b2, s_fixed, t0_fixed),
+                    doc="GRT-LBA likelihood / GRT-LBA 似然函數")
+    
+    return model
 
-def grt_dbt(stimloc, db, sp, coactive=False):
-    """
-    GRT decision boundary transformation function (ported from MATLAB grt_dbt.m)
-    
-    Purpose:
-        Converts GRT decision boundaries and perceptual variabilities into LBA drift rates
-        
-    Parameters:
-    -----------
-    stimloc : array, shape (n_items, 2)
-        Stimulus locations [dimx, dimy] in 2D perceptual space
-    db : array, shape (2,)
-        Decision boundaries [bndx, bndy] separating response regions
-    sp : array, shape (2,)
-        Perceptual variabilities [sigmax, sigmay] (standard deviations of perceptual noise)
-    coactive : bool
-        Whether to use coactive model with multivariate normal distribution
-    
-    Returns:
-    --------
-    p : array, shape (n_items,)
-        Drift rate probabilities for accumulator A
-    """
-    stimloc = np.atleast_2d(stimloc)
-    db = np.atleast_1d(db)
-    sp = np.atleast_1d(sp)
-    
-    if not coactive:
-        # Standard GRT model - independent processing of dimensions
-        if stimloc.shape[0] > 1:
-            db = np.tile(db, (stimloc.shape[0], 1))
-            sp = np.tile(sp, (stimloc.shape[0], 1))
-        
-        # Standardized distance and convert to probabilities
-        zx = (db - stimloc) / sp
-        p = stats.norm.cdf(zx)
-        
-        # Avoid extreme values that cause numerical issues
-        p = np.clip(p, 0.00001, 0.99999)
-        
-        # Calculate probability for accumulator A (first dimension)
-        p_result = p[:, 0] if p.ndim > 1 else p[0]
-        
-    else:
-        # Coactive model using multivariate normal distribution
-        p_result = []
-        for i in range(stimloc.shape[0]):
-            mean = stimloc[i]
-            cov = np.diag(sp**2)
-            p_a = stats.multivariate_normal.cdf(db, mean=mean, cov=cov)
-            p_result.append(1 - p_a)  # Invert for P(choose B)
-            
-        p_result = np.array(p_result)
-        p_result = np.clip(p_result, 0.00001, 0.99999)
-    
-    return p_result
+# ============================================================================
+# STAGE 2: SEPARATE PERCEPTUAL VARIABILITIES
+# 階段2：分離感知變異性
+# ============================================================================
 
-def logit_transform(x, inverse=False):
-    """Logit transformation function"""
-    if inverse:
-        return expit(x)  # 1 / (1 + exp(-x))
-    else:
-        return logit(x)   # log(x / (1-x))
-
-def transform_boundaries(db_logit, stimloc):
-    """Transform logit-space boundaries back to real coordinates"""
-    min_x, max_x = stimloc[:, 0].min(), stimloc[:, 0].max()
-    min_y, max_y = stimloc[:, 1].min(), stimloc[:, 1].max()
-    
-    db1_real = (logit_transform(db_logit[0], inverse=True) * 
-                (max_x - min_x)) + min_x
-    
-    db2_real = (logit_transform(db_logit[1], inverse=True) * 
-                (max_y - min_y)) + min_y
-    
-    return np.array([db1_real, db2_real])
-
-def vectorized_lba_loglik_single_subject(rt_data, choice_data, stimloc, 
-                                        db1, db2, sp1, sp2, A, b1, b2, s, t0):
+def stage2_separate_perceptual_variabilities(rt_data: np.ndarray, choice_data: np.ndarray, 
+                                           stimloc_data: np.ndarray, 
+                                           stage1_trace: az.InferenceData) -> pm.Model:
     """
-    FIXED: Vectorized LBA log-likelihood for single subject with GRT drift rate conversion
+    Stage 2: Separate Perceptual Variabilities
+    階段2：分離感知變異性
     
-    This version uses vectorized operations instead of explicit loops to avoid
-    the tensor-to-int conversion issue.
+    Purpose / 目的:
+    - Test GRT separability assumption (sp1 ≠ sp2)
+    - 測試 GRT 可分離性假設 (sp1 ≠ sp2)
+    - Use Stage 1 results as informative priors
+    - 使用階段1結果作為資訊性先驗
+    - Maintain all other simplifications for stability
+    - 維持所有其他簡化以保持穩定性
     
-    Purpose:
-        Calculate log-likelihood for LBA model where drift rates are derived
-        from GRT decision boundaries and perceptual variabilities
-        
-    Parameters:
-    -----------
-    rt_data : tensor, shape (n_trials,)
-        Response times for all trials
-    choice_data : tensor, shape (n_trials,)
-        Binary choices (0 or 1) for all trials
-    stimloc : tensor, shape (n_trials, 2)
-        Stimulus locations for each trial [x, y coordinates]
-    db1, db2 : tensor (scalar)
-        Decision boundaries for two dimensions
-    sp1, sp2 : tensor (scalar)
-        Perceptual variabilities for two dimensions
-    A : tensor (scalar)
-        LBA start point variability (uniform distribution width)
-    b1, b2 : tensor (scalar)
-        LBA decision thresholds for each accumulator
-    s : tensor (scalar)
-        LBA drift rate variability (noise in evidence accumulation)
-    t0 : tensor (scalar)
-        Non-decision time (encoding + motor response)
-        
-    Returns:
-    --------
-    total_loglik : tensor (scalar)
-        Total log-likelihood across all trials
+    New Parameters / 新參數:
+    - sp1, sp2: Separate perceptual variabilities / 分離的感知變異性
+    
+    Theoretical Significance / 理論意義:
+    - Enables testing of perceptual independence
+    - 能夠測試感知獨立性
+    - Critical for GRT assumptions validation
+    - 對 GRT 假設驗證至關重要
     """
-    # Ensure minimum parameter values for numerical stability
-    A = pt.maximum(A, 0.05)
-    b1 = pt.maximum(b1, A + 0.05)  # Threshold must exceed start point variability
-    b2 = pt.maximum(b2, A + 0.05)
-    s = pt.maximum(s, 0.1)
-    t0 = pt.maximum(t0, 0.01)
-    sp1 = pt.maximum(sp1, 0.01)
-    sp2 = pt.maximum(sp2, 0.01)
     
-    # Decision time (remove non-decision time from RT)
-    rt_decision = pt.maximum(rt_data - t0, 0.01)
+    print("Stage 2: Separating perceptual variabilities...")
+    print("階段2：分離感知變異性...")
+    print("New parameters / 新參數: sp1, sp2 (separate)")
     
-    # Convert GRT parameters to LBA drift rates for all trials (VECTORIZED)
-    # v1_prob: probability that evidence favors accumulator 1
-    v1_prob = pt.sigmoid((db1 - stimloc[:, 0]) / sp1)
-    v2_prob = pt.sigmoid((db2 - stimloc[:, 1]) / sp2)
+    # Extract Stage 1 posterior summaries / 提取階段1後驗摘要
+    stage1_summary = az.summary(stage1_trace)
+    
+    with pm.Model() as model:
+        # ====================================================================
+        # GRT Parameters with Stage 1 Priors / 使用階段1先驗的 GRT 參數
+        # ====================================================================
+        
+        # Decision boundaries using Stage 1 results as priors
+        # 使用階段1結果作為先驗的決策邊界
+        db1_mean = float(stage1_summary.loc['db1', 'mean'])
+        db1 = pm.Normal('db1', mu=db1_mean, sigma=0.1,
+                       doc="Decision boundary 1 with informed prior / 有信息先驗的決策邊界1")
+        
+        db2_mean = float(stage1_summary.loc['db2', 'mean'])
+        db2 = pm.Normal('db2', mu=db2_mean, sigma=0.1,
+                       doc="Decision boundary 2 with informed prior / 有信息先驗的決策邊界2")
+        
+        # NEW: Separate perceptual variabilities / 新增：分離的感知變異性
+        # Purpose: Test independence assumption of GRT
+        # 目的：測試 GRT 的獨立性假設
+        sp_prior_mean = float(stage1_summary.loc['sp', 'mean'])
+        
+        sp1 = pm.HalfNormal('sp1', sigma=sp_prior_mean * 0.5,
+                           doc="Perceptual variability dimension 1 / 感知變異性維度1")
+        sp2 = pm.HalfNormal('sp2', sigma=sp_prior_mean * 0.5,
+                           doc="Perceptual variability dimension 2 / 感知變異性維度2")
+        
+        # ====================================================================
+        # LBA Parameters (constrained by Stage 1) / LBA 參數（受階段1約束）
+        # ====================================================================
+        
+        A_mean = float(stage1_summary.loc['A', 'mean'])
+        A = pm.Normal('A', mu=A_mean, sigma=0.05,
+                     doc="LBA start point variability / LBA 起始點變異性")
+        
+        b_mean = float(stage1_summary.loc['b', 'mean'])
+        b_shared = pm.Normal('b', mu=b_mean, sigma=0.05,
+                            doc="Shared threshold offset / 共享閾值偏移")
+        
+        # Still using shared thresholds / 仍使用共享閾值
+        b1 = pm.Deterministic('b1', A + b_shared)
+        b2 = pm.Deterministic('b2', A + b_shared)
+        
+        # Fixed parameters / 固定參數
+        s_fixed = 0.3
+        t0_fixed = 0.25
+        
+        # ====================================================================
+        # Enhanced GRT→LBA Transformation / 增強的 GRT→LBA 轉換
+        # ====================================================================
+        
+        pm.Potential('grt_lba_likelihood',
+                    enhanced_vectorized_lba_loglik(
+                        rt_data, choice_data, stimloc_data,
+                        db1, db2, sp1, sp2, A, b1, b2, s_fixed, t0_fixed))
+    
+    return model
+
+# ============================================================================
+# STAGE 3: SEPARATE LBA THRESHOLDS
+# 階段3：分離 LBA 閾值
+# ============================================================================
+
+def stage3_separate_lba_thresholds(rt_data: np.ndarray, choice_data: np.ndarray, 
+                                  stimloc_data: np.ndarray, 
+                                  stage2_trace: az.InferenceData) -> pm.Model:
+    """
+    Stage 3: Separate LBA Thresholds
+    階段3：分離 LBA 閾值
+    
+    Purpose / 目的:
+    - Allow for response bias in LBA accumulators
+    - 允許 LBA 累加器中的反應偏誤
+    - Test threshold independence (b1 ≠ b2)
+    - 測試閾值獨立性 (b1 ≠ b2)
+    - Maintain GRT structure while adding LBA flexibility
+    - 在增加 LBA 靈活性的同時維持 GRT 結構
+    
+    New Parameters / 新參數:
+    - bMa1, bMa2: Separate threshold offsets / 分離的閾值偏移
+    
+    Model Complexity / 模型複雜性:
+    - 7 parameters total / 總共7個參數
+    - Approaching full model complexity / 接近完整模型複雜性
+    """
+    
+    print("Stage 3: Separating LBA thresholds...")
+    print("階段3：分離 LBA 閾值...")
+    print("New parameters / 新參數: bMa1, bMa2 (separate threshold offsets)")
+    
+    stage2_summary = az.summary(stage2_trace)
+    
+    with pm.Model() as model:
+        # ====================================================================
+        # GRT Parameters (well-informed priors) / GRT 參數（充分信息的先驗）
+        # ====================================================================
+        
+        # Very tight priors based on Stage 2 convergence
+        # 基於階段2收斂的非常緊的先驗
+        db1_mean = float(stage2_summary.loc['db1', 'mean'])
+        db1 = pm.Normal('db1', mu=db1_mean, sigma=0.05)
+        
+        db2_mean = float(stage2_summary.loc['db2', 'mean'])
+        db2 = pm.Normal('db2', mu=db2_mean, sigma=0.05)
+        
+        sp1_mean = float(stage2_summary.loc['sp1', 'mean'])
+        sp1 = pm.Normal('sp1', mu=sp1_mean, sigma=0.05)
+        
+        sp2_mean = float(stage2_summary.loc['sp2', 'mean'])
+        sp2 = pm.Normal('sp2', mu=sp2_mean, sigma=0.05)
+        
+        # ====================================================================
+        # LBA Parameters with Separate Thresholds / 分離閾值的 LBA 參數
+        # ====================================================================
+        
+        A_mean = float(stage2_summary.loc['A', 'mean'])
+        A = pm.Normal('A', mu=A_mean, sigma=0.05)
+        
+        # NEW: Separate threshold offsets / 新增：分離的閾值偏移
+        # Purpose: Allow for response bias and threshold asymmetry
+        # 目的：允許反應偏誤和閾值不對稱
+        b_prior_mean = float(stage2_summary.loc['b', 'mean'])
+        
+        bMa1 = pm.HalfNormal('bMa1', sigma=b_prior_mean * 0.5,
+                            doc="Threshold offset accumulator 1 / 閾值偏移累加器1")
+        bMa2 = pm.HalfNormal('bMa2', sigma=b_prior_mean * 0.5,
+                            doc="Threshold offset accumulator 2 / 閾值偏移累加器2")
+        
+        # Separate decision thresholds / 分離的決策閾值
+        b1 = pm.Deterministic('b1', A + bMa1,
+                             doc="Decision threshold accumulator 1 / 決策閾值累加器1")
+        b2 = pm.Deterministic('b2', A + bMa2,
+                             doc="Decision threshold accumulator 2 / 決策閾值累加器2")
+        
+        # Still fixed / 仍然固定
+        s_fixed = 0.3
+        t0_fixed = 0.25
+        
+        # ====================================================================
+        # Full GRT→LBA with Threshold Flexibility / 具有閾值靈活性的完整 GRT→LBA
+        # ====================================================================
+        
+        pm.Potential('grt_lba_likelihood',
+                    enhanced_vectorized_lba_loglik(
+                        rt_data, choice_data, stimloc_data,
+                        db1, db2, sp1, sp2, A, b1, b2, s_fixed, t0_fixed))
+    
+    return model
+
+# ============================================================================
+# STAGE 4: FULL GRT-LBA MODEL
+# 階段4：完整 GRT-LBA 模型
+# ============================================================================
+
+def stage4_full_grt_lba(rt_data: np.ndarray, choice_data: np.ndarray, 
+                       stimloc_data: np.ndarray, 
+                       stage3_trace: az.InferenceData) -> pm.Model:
+    """
+    Stage 4: Full GRT-LBA Model
+    階段4：完整 GRT-LBA 模型
+    
+    Purpose / 目的:
+    - Estimate all parameters with maximum flexibility
+    - 以最大靈活性估計所有參數
+    - Complete the theoretical GRT-LBA integration
+    - 完成理論上的 GRT-LBA 整合
+    - Enable full Sigma matrix computation
+    - 能夠進行完整的 Sigma 矩陣計算
+    
+    All Parameters Estimated / 估計所有參數:
+    - GRT: db1, db2, sp1, sp2
+    - LBA: A, b1, b2, s, t0
+    
+    Final Objectives / 最終目標:
+    - Test complete GRT assumptions
+    - 測試完整的 GRT 假設
+    - Compute comprehensive Sigma matrix
+    - 計算綜合 Sigma 矩陣
+    - Validate independence and separability
+    - 驗證獨立性和可分離性
+    """
+    
+    print("Stage 4: Full GRT-LBA model with all parameters...")
+    print("階段4：具有所有參數的完整 GRT-LBA 模型...")
+    print("All parameters / 所有參數: db1, db2, sp1, sp2, A, bMa1, bMa2, s, t0")
+    
+    stage3_summary = az.summary(stage3_trace)
+    
+    with pm.Model() as model:
+        # ====================================================================
+        # GRT Parameters (final estimation) / GRT 參數（最終估計）
+        # ====================================================================
+        
+        # Decision boundaries with refined priors
+        # 具有精細先驗的決策邊界
+        db1_mean = float(stage3_summary.loc['db1', 'mean'])
+        db1 = pm.Normal('db1', mu=db1_mean, sigma=0.05,
+                       doc="Final decision boundary 1 / 最終決策邊界1")
+        
+        db2_mean = float(stage3_summary.loc['db2', 'mean'])
+        db2 = pm.Normal('db2', mu=db2_mean, sigma=0.05,
+                       doc="Final decision boundary 2 / 最終決策邊界2")
+        
+        # Perceptual variabilities with refined priors
+        # 具有精細先驗的感知變異性
+        sp1_mean = float(stage3_summary.loc['sp1', 'mean'])
+        sp1 = pm.Normal('sp1', mu=sp1_mean, sigma=0.05,
+                       doc="Final perceptual variability 1 / 最終感知變異性1")
+        
+        sp2_mean = float(stage3_summary.loc['sp2', 'mean'])
+        sp2 = pm.Normal('sp2', mu=sp2_mean, sigma=0.05,
+                       doc="Final perceptual variability 2 / 最終感知變異性2")
+        
+        # ====================================================================
+        # LBA Parameters (complete estimation) / LBA 參數（完整估計）
+        # ====================================================================
+        
+        A_mean = float(stage3_summary.loc['A', 'mean'])
+        A = pm.Normal('A', mu=A_mean, sigma=0.05,
+                     doc="Final start point variability / 最終起始點變異性")
+        
+        bMa1_mean = float(stage3_summary.loc['bMa1', 'mean'])
+        bMa1 = pm.Normal('bMa1', mu=bMa1_mean, sigma=0.05,
+                        doc="Final threshold offset 1 / 最終閾值偏移1")
+        
+        bMa2_mean = float(stage3_summary.loc['bMa2', 'mean'])
+        bMa2 = pm.Normal('bMa2', mu=bMa2_mean, sigma=0.05,
+                        doc="Final threshold offset 2 / 最終閾值偏移2")
+        
+        b1 = pm.Deterministic('b1', A + bMa1)
+        b2 = pm.Deterministic('b2', A + bMa2)
+        
+        # NEW: Now estimate drift rate variability and non-decision time
+        # 新增：現在估計漂移率變異性和非決策時間
+        s = pm.HalfNormal('s', sigma=0.2,
+                         doc="Drift rate variability / 漂移率變異性")
+        t0 = pm.HalfNormal('t0', sigma=0.1,
+                          doc="Non-decision time / 非決策時間")
+        
+        # ====================================================================
+        # Complete GRT→LBA Transformation / 完整的 GRT→LBA 轉換
+        # ====================================================================
+        
+        pm.Potential('grt_lba_likelihood',
+                    enhanced_vectorized_lba_loglik(
+                        rt_data, choice_data, stimloc_data,
+                        db1, db2, sp1, sp2, A, b1, b2, s, t0))
+    
+    return model
+
+# ============================================================================
+# ENHANCED LIKELIHOOD FUNCTION
+# 增強的似然函數
+# ============================================================================
+
+def enhanced_vectorized_lba_loglik(rt_data: np.ndarray, choice_data: np.ndarray, 
+                                  stimloc: np.ndarray, db1, db2, sp1, sp2, 
+                                  A, b1, b2, s, t0):
+    """
+    Enhanced Vectorized LBA Log-Likelihood with Improved Numerical Stability
+    具有改進數值穩定性的增強向量化 LBA 對數似然函數
+    
+    Purpose / 目的:
+    - Maintain theoretical accuracy while improving convergence
+    - 在改善收斂性的同時保持理論準確性
+    - Handle edge cases and numerical instabilities
+    - 處理邊界情況和數值不穩定性
+    - Preserve GRT→LBA transformation fidelity
+    - 保持 GRT→LBA 轉換的保真度
+    """
+    
+    # Enhanced numerical stability constraints
+    # 增強的數值穩定性約束
+    A = pt.maximum(A, 0.1)
+    b1 = pt.maximum(b1, A + 0.15)
+    b2 = pt.maximum(b2, A + 0.15)
+    s = pt.maximum(s, 0.15)
+    t0 = pt.maximum(t0, 0.05)
+    sp1 = pt.maximum(sp1, 0.05)
+    sp2 = pt.maximum(sp2, 0.05)
+    
+    # Decision time calculation / 決策時間計算
+    rt_decision = pt.maximum(rt_data - t0, 0.05)
+    
+    # GRT→LBA transformation with enhanced stability
+    # 具有增強穩定性的 GRT→LBA 轉換
+    v1_prob = 0.5 * (1 + pt.tanh((db1 - stimloc[:, 0]) / (2 * sp1)))
+    v2_prob = 0.5 * (1 + pt.tanh((db2 - stimloc[:, 1]) / (2 * sp2)))
     
     # Combine probabilities for drift rates
-    v1 = v1_prob * v2_prob  # Probability for accumulator 1
-    v2 = 1 - v1             # Probability for accumulator 2
+    # 結合漂移率的概率
+    v1 = v1_prob * v2_prob
+    v2 = 1 - v1
     
-    # Ensure minimum drift rates for numerical stability
-    v1 = pt.maximum(v1, 0.1)
-    v2 = pt.maximum(v2, 0.1)
+    # Ensure meaningful drift rates
+    # 確保有意義的漂移率
+    v1 = pt.maximum(v1, 0.15)
+    v2 = pt.maximum(v2, 0.15)
     
-    # Select parameters for winning and losing accumulators based on choice (VECTORIZED)
+    # Normalize and scale / 歸一化和縮放
+    v_sum = v1 + v2
+    v1 = (v1 / v_sum) * s
+    v2 = (v2 / v_sum) * s
+    
+    # Vectorized parameter selection / 向量化參數選擇
     v_winner = pt.where(pt.eq(choice_data, 0), v1, v2)
     v_loser = pt.where(pt.eq(choice_data, 0), v2, v1)
     b_winner = pt.where(pt.eq(choice_data, 0), b1, b2)
     b_loser = pt.where(pt.eq(choice_data, 0), b2, b1)
     
-    # LBA likelihood calculation (VECTORIZED)
-    rt_decision = pt.maximum(rt_decision, 0.01)
+    # Enhanced LBA likelihood calculation
+    # 增強的 LBA 似然計算
+    rt_decision = pt.maximum(rt_decision, 0.05)
     sqrt_t = pt.sqrt(rt_decision)
     
-    # Winner PDF calculation
+    # Winner PDF with enhanced numerical bounds
+    # 具有增強數值邊界的獲勝者PDF
     z1_win = (v_winner * rt_decision - b_winner) / sqrt_t
     z2_win = (v_winner * rt_decision - A) / sqrt_t
-    z1_win = pt.clip(z1_win, -10, 10)  # Prevent overflow
-    z2_win = pt.clip(z2_win, -10, 10)
+    z1_win = pt.clip(z1_win, -8, 8)
+    z2_win = pt.clip(z2_win, -8, 8)
     
-    # Normal CDF and PDF values
+    # Stable normal calculations / 穩定的正態計算
     Phi_z1_win = 0.5 * (1 + pt.erf(z1_win / pt.sqrt(2)))
     Phi_z2_win = 0.5 * (1 + pt.erf(z2_win / pt.sqrt(2)))
+    Phi_z1_win = pt.clip(Phi_z1_win, 1e-8, 1 - 1e-8)
+    Phi_z2_win = pt.clip(Phi_z2_win, 1e-8, 1 - 1e-8)
+    
     phi_z1_win = pt.exp(-0.5 * z1_win**2) / pt.sqrt(2 * np.pi)
     phi_z2_win = pt.exp(-0.5 * z2_win**2) / pt.sqrt(2 * np.pi)
     
-    # LBA winner PDF components
-    cdf_diff = pt.maximum(Phi_z1_win - Phi_z2_win, 1e-12)
+    # Winner PDF calculation / 獲勝者PDF計算
+    cdf_diff = pt.maximum(Phi_z1_win - Phi_z2_win, 1e-10)
     pdf_diff = (phi_z1_win - phi_z2_win) / sqrt_t
     
     winner_pdf = (v_winner / A) * cdf_diff + pdf_diff / A
-    winner_pdf = pt.maximum(winner_pdf, 1e-12)
+    winner_pdf = pt.maximum(winner_pdf, 1e-10)
     winner_logpdf = pt.log(winner_pdf)
     
-    # Loser survival function (probability of not finishing by time rt_decision)
+    # Loser survival function / 失敗者生存函數
     z1_lose = (v_loser * rt_decision - b_loser) / sqrt_t
     z2_lose = (v_loser * rt_decision - A) / sqrt_t
-    z1_lose = pt.clip(z1_lose, -10, 10)
-    z2_lose = pt.clip(z2_lose, -10, 10)
+    z1_lose = pt.clip(z1_lose, -8, 8)
+    z2_lose = pt.clip(z2_lose, -8, 8)
     
     Phi_z1_lose = 0.5 * (1 + pt.erf(z1_lose / pt.sqrt(2)))
     Phi_z2_lose = 0.5 * (1 + pt.erf(z2_lose / pt.sqrt(2)))
+    Phi_z1_lose = pt.clip(Phi_z1_lose, 1e-8, 1 - 1e-8)
+    Phi_z2_lose = pt.clip(Phi_z2_lose, 1e-8, 1 - 1e-8)
     
-    loser_cdf = pt.maximum(Phi_z1_lose - Phi_z2_lose, 1e-12)
-    loser_survival = pt.maximum(1 - loser_cdf, 1e-12)
+    loser_cdf = pt.maximum(Phi_z1_lose - Phi_z2_lose, 1e-10)
+    loser_survival = pt.maximum(1 - loser_cdf, 1e-10)
     loser_log_survival = pt.log(loser_survival)
     
-    # Combine winner PDF and loser survival for all trials
+    # Combine with safety checks / 結合安全檢查
     trial_loglik = winner_logpdf + loser_log_survival
+    trial_loglik = pt.where(pt.isnan(trial_loglik), -1000.0, trial_loglik)
+    trial_loglik = pt.where(pt.isinf(trial_loglik), -1000.0, trial_loglik)
+    trial_loglik = pt.maximum(trial_loglik, -1000.0)
     
-    # Sum across all trials (this is the key - no explicit loop needed)
-    total_loglik = pt.sum(trial_loglik)
-    
-    return total_loglik
+    return pt.sum(trial_loglik)
 
-def compute_sigma_matrix(trace, param_names=['db1', 'db2', 'sp1', 'sp2']):
-    """Compute the sigma matrix (covariance matrix) from MCMC samples"""
-    posterior = trace.posterior
-    
-    # Extract parameter samples
-    param_samples = []
-    available_params = []
-    
-    for param in param_names:
-        if param in posterior.data_vars:
-            samples = posterior[param].values.flatten()
-            param_samples.append(samples)
-            available_params.append(param)
-    
-    if len(param_samples) == 0:
-        return None, None, available_params
-    
-    # Stack samples into matrix (samples × parameters)
-    samples_matrix = np.column_stack(param_samples)
-    
-    # Compute covariance and correlation matrices
-    sigma_matrix = np.cov(samples_matrix.T)  # Covariance matrix
-    correlation_matrix = np.corrcoef(samples_matrix.T)  # Correlation matrix
-    
-    return sigma_matrix, correlation_matrix, available_params
+# ============================================================================
+# STAGED ANALYSIS CONTROLLER
+# 階段式分析控制器
+# ============================================================================
 
-class IndividualSubjectGRTLBA:
-    """Individual Subject GRT-LBA Analysis with FIXED likelihood function and JSON serialization"""
+class StagedGRTLBAAnalyzer:
+    """
+    Staged GRT-LBA Bayesian Analysis Controller
+    階段式 GRT-LBA 貝葉斯分析控制器
     
-    def __init__(self, csv_file='GRT_LBA.csv'):
-        """Initialize with data loading"""
+    Purpose / 目的:
+    - Orchestrate staged modeling approach for improved convergence
+    - 編排階段式建模方法以改善收斂性
+    - Preserve Sigma matrix computation throughout all stages
+    - 在所有階段中保持 Sigma 矩陣計算
+    - Enable comprehensive GRT assumption testing
+    - 能夠進行綜合的 GRT 假設檢驗
+    
+    Features / 特色:
+    - Automatic convergence checking between stages
+    - 階段間自動收斂檢查
+    - Fallback to previous stage if convergence fails
+    - 如果收斂失敗則回退到前一階段
+    - Comprehensive results reporting
+    - 綜合結果報告
+    - Sigma matrix computation and independence testing
+    - Sigma 矩陣計算和獨立性測試
+    """
+    
+    def __init__(self, csv_file: str = 'GRT_LBA.csv'):
+        """
+        Initialize Staged GRT-LBA Analyzer
+        初始化階段式 GRT-LBA 分析器
+        
+        Parameters / 參數:
+        csv_file: Path to data file / 數據文件路徑
+        """
         self.csv_file = csv_file
-        self.results_dir = Path('individual_results')
+        self.results_dir = Path('staged_results')
         self.results_dir.mkdir(exist_ok=True)
+        
+        # Analysis tracking / 分析追蹤
+        self.stage_results = {}  # Results for each stage / 每個階段的結果
+        self.stage_traces = {}   # MCMC traces for each stage / 每個階段的MCMC軌跡
+        self.final_results = {}  # Final analysis results / 最終分析結果
+        
+        # Load and prepare data / 載入和準備數據
         self.load_and_prepare_data()
         
-        # Storage for individual and combined results
-        self.individual_results = {}
-        self.individual_traces = {}
-        self.combined_results = {}
+        print("Staged GRT-LBA Analyzer initialized")
+        print("階段式 GRT-LBA 分析器已初始化")
+        print(f"Data: {len(self.df)} trials, {self.n_participants} participants")
+        print(f"數據：{len(self.df)} 次試驗，{self.n_participants} 名參與者")
     
     def load_and_prepare_data(self):
-        """Load and prepare data for individual subject analysis"""
-        print("Loading data for individual subject GRT-LBA analysis...")
+        """
+        Load and prepare data for staged analysis
+        載入和準備階段式分析的數據
+        """
+        print("Loading data for staged GRT-LBA analysis...")
+        print("載入階段式 GRT-LBA 分析數據...")
         
         df = pd.read_csv(self.csv_file)
-        print(f"Original data: {len(df)} trials")
+        print(f"Original data: {len(df)} trials / 原始數據：{len(df)} 次試驗")
         
-        # Filter extreme RTs (standard preprocessing in RT modeling)
+        # Standard RT filtering / 標準RT過濾
         df = df[(df['RT'] > 0.15) & (df['RT'] < 2.0)]
-        print(f"After RT filtering: {len(df)} trials")
+        print(f"After RT filtering: {len(df)} trials / RT過濾後：{len(df)} 次試驗")
         
-        # Convert Response to binary choice
+        # Binary choice conversion / 二元選擇轉換
         df['choice_binary'] = (df['Response'] >= 2).astype(int)
         
-        # Create stimulus locations based on Stimulus column
+        # Stimulus location mapping / 刺激位置映射
         if 'Stimulus' in df.columns:
             unique_stimuli = sorted(df['Stimulus'].unique())
             n_stim = len(unique_stimuli)
             
-            # Create 2D grid layout for stimuli
+            # Create 2D grid layout / 創建2D網格佈局
             if n_stim <= 4:
-                # 2x2 grid for up to 4 stimuli
-                stim_locs = []
-                for i, stim in enumerate(unique_stimuli):
-                    row = i // 2
-                    col = i % 2
-                    stim_locs.append([col, row])
+                stim_locs = [[i % 2, i // 2] for i in range(n_stim)]
             else:
-                # 3x3 grid for more stimuli
-                stim_locs = []
-                for i, stim in enumerate(unique_stimuli):
-                    row = i // 3
-                    col = i % 3
-                    stim_locs.append([col, row])
+                stim_locs = [[i % 3, i // 3] for i in range(n_stim)]
             
             self.stimloc = np.array(stim_locs)
-            
-            # Map stimulus numbers to locations
-            stim_to_loc = {stim: loc for stim, loc in 
-                          zip(unique_stimuli, stim_locs)}
+            stim_to_loc = {stim: loc for stim, loc in zip(unique_stimuli, stim_locs)}
             
             df['stimloc_x'] = df['Stimulus'].map(lambda x: stim_to_loc[x][0])
             df['stimloc_y'] = df['Stimulus'].map(lambda x: stim_to_loc[x][1])
         else:
-            # Default 2x2 grid if no stimulus info
+            # Default layout / 默認佈局
             self.stimloc = np.array([[0, 0], [1, 0], [0, 1], [1, 1]])
             df['stimloc_x'] = 0
             df['stimloc_y'] = 0
@@ -336,144 +635,293 @@ class IndividualSubjectGRTLBA:
         self.participants = sorted(df['participant'].unique())
         self.n_participants = len(self.participants)
         
-        print(f"Participants: {self.n_participants}")
         print(f"Participants: {self.participants}")
-        print(f"Stimulus locations shape: {self.stimloc.shape}")
-        
-        # Check data distribution per participant
-        for p in self.participants[:5]:  # Show first 5
-            p_data = df[df['participant'] == p]
-            print(f"  Participant {p}: {len(p_data)} trials, "
-                  f"choice dist: {p_data['choice_binary'].value_counts().to_dict()}")
+        print(f"參與者：{self.participants}")
     
-    def build_single_subject_model(self, subject_data, subject_id):
-        """Build GRT-LBA model for single subject with FIXED likelihood"""
-        # Prepare data arrays
-        rt_obs = subject_data['RT'].values.astype(np.float32)
-        choice_obs = subject_data['choice_binary'].values.astype(np.int32)
-        stimloc_obs = np.column_stack([
+    def analyze_single_subject_staged(self, subject_id: int, 
+                                    draws: int = 500, tune: int = 300, 
+                                    chains: int = 2) -> Dict[str, Any]:
+        """
+        Perform staged analysis for a single subject
+        對單個受試者進行階段式分析
+        
+        Parameters / 參數:
+        subject_id: Subject identifier / 受試者標識符
+        draws: MCMC draws per stage / 每階段MCMC抽樣數
+        tune: MCMC tuning steps per stage / 每階段MCMC調整步數
+        chains: Number of MCMC chains / MCMC鏈數量
+        
+        Returns / 返回:
+        Dict containing results from successful stage / 包含成功階段結果的字典
+        """
+        
+        print(f"\n{'='*60}")
+        print(f"STAGED ANALYSIS FOR SUBJECT {subject_id}")
+        print(f"受試者 {subject_id} 的階段式分析")
+        print(f"{'='*60}")
+        
+        # Prepare subject data / 準備受試者數據
+        subject_data = self.df[self.df['participant'] == subject_id].copy()
+        
+        if len(subject_data) < 20:
+            print(f"⚠️  Warning: Subject {subject_id} has only {len(subject_data)} trials")
+            print(f"⚠️  警告：受試者 {subject_id} 只有 {len(subject_data)} 次試驗")
+            return None
+        
+        # Data arrays / 數據陣列
+        rt_data = subject_data['RT'].values.astype(np.float32)
+        choice_data = subject_data['choice_binary'].values.astype(np.int32)
+        stimloc_data = np.column_stack([
             subject_data['stimloc_x'].values,
             subject_data['stimloc_y'].values
         ]).astype(np.float32)
         
-        print(f"  Building model for subject {subject_id}: {len(subject_data)} trials")
+        print(f"Data prepared: {len(rt_data)} trials")
+        print(f"數據準備完成：{len(rt_data)} 次試驗")
+        print(f"Choice distribution: {np.bincount(choice_data)}")
+        print(f"選擇分佈：{np.bincount(choice_data)}")
         
-        with pm.Model() as model:
-            # Decision boundary parameters (in logit space for unconstrained sampling)
-            db1_logit = pm.Normal('db1_logit', mu=0, sigma=0.5)
-            db2_logit = pm.Normal('db2_logit', mu=0, sigma=0.5)
-            
-            # Perceptual variability parameters (in log space for positive constraint)
-            sp1_log = pm.Normal('sp1_log', mu=np.log(0.2), sigma=0.3)
-            sp2_log = pm.Normal('sp2_log', mu=np.log(0.2), sigma=0.3)
-            
-            # LBA parameters (all in log space for positive constraint)
-            A_log = pm.Normal('A_log', mu=np.log(0.35), sigma=0.3)
-            bMa1_log = pm.Normal('bMa1_log', mu=np.log(0.25), sigma=0.5)
-            bMa2_log = pm.Normal('bMa2_log', mu=np.log(0.25), sigma=0.5)
-            s_log = pm.Normal('s_log', mu=np.log(0.25), sigma=0.3)
-            t0_log = pm.Normal('t0_log', mu=np.log(0.22), sigma=0.3)
-            
-            # Transform to interpretable parameter space
-            sp1 = pm.Deterministic('sp1', pm.math.exp(sp1_log))
-            sp2 = pm.Deterministic('sp2', pm.math.exp(sp2_log))
-            A = pm.Deterministic('A', pm.math.exp(A_log))
-            s = pm.Deterministic('s', pm.math.exp(s_log))
-            t0 = pm.Deterministic('t0', pm.math.exp(t0_log))
-            
-            # Transform boundaries to real coordinate space
-            stimloc_tensor = pt.as_tensor(self.stimloc, dtype='float32')
-            min_x = pt.min(stimloc_tensor[:, 0])
-            max_x = pt.max(stimloc_tensor[:, 0])
-            min_y = pt.min(stimloc_tensor[:, 1])
-            max_y = pt.max(stimloc_tensor[:, 1])
-            
-            # Sigmoid maps logit space to (0,1), then scale to coordinate range
-            db1 = pm.Deterministic('db1', 
-                                  pm.math.sigmoid(db1_logit) * (max_x - min_x) + min_x)
-            db2 = pm.Deterministic('db2', 
-                                  pm.math.sigmoid(db2_logit) * (max_y - min_y) + min_y)
-            
-            # Transform thresholds (must exceed start point variability)
-            bMa1 = pm.Deterministic('bMa1', pm.math.exp(bMa1_log))
-            bMa2 = pm.Deterministic('bMa2', pm.math.exp(bMa2_log))
-            b1 = pm.Deterministic('b1', A + bMa1)
-            b2 = pm.Deterministic('b2', A + bMa2)
-            
-            # FIXED: Use vectorized LBA likelihood with GRT conversion
-            pm.Potential('lba_grt_likelihood',
-                        vectorized_lba_loglik_single_subject(
-                            pt.as_tensor(rt_obs),
-                            pt.as_tensor(choice_obs),
-                            pt.as_tensor(stimloc_obs),
-                            db1, db2, sp1, sp2, A, b1, b2, s, t0))
+        # Initialize stage tracking / 初始化階段追蹤
+        stage_traces = {}
+        stage_results = {}
+        successful_stage = 0
         
-        return model
-    
-    def analyze_single_subject(self, subject_id, draws=400, tune=200, chains=2):
-        """Analyze single subject with Bayesian GRT-LBA"""
-        print(f"\n{'='*50}")
-        print(f"ANALYZING SUBJECT {subject_id}")
-        print(f"{'='*50}")
+        # ====================================================================
+        # STAGE 1: SIMPLIFIED GRT-LBA
+        # 階段1：簡化的 GRT-LBA
+        # ====================================================================
         
-        # Get subject data
-        subject_data = self.df[self.df['participant'] == subject_id].copy()
-        
-        if len(subject_data) < 20:
-            print(f"  Warning: Subject {subject_id} has only {len(subject_data)} trials")
-            return None
-        
-        # Build model
-        model = self.build_single_subject_model(subject_data, subject_id)
-        
-        # Sample
-        print(f"  Starting MCMC sampling...")
-        start_time = time.time()
+        print(f"\n{'-'*40}")
+        print("STAGE 1: Simplified GRT-LBA")
+        print("階段1：簡化的 GRT-LBA")
+        print(f"{'-'*40}")
         
         try:
-            with model:
-                trace = pm.sample(
+            model1 = stage1_simplified_grt_lba(rt_data, choice_data, stimloc_data)
+            
+            print("Starting MCMC sampling...")
+            print("開始 MCMC 採樣...")
+            
+            with model1:
+                trace1 = pm.sample(
                     draws=draws, tune=tune, chains=chains,
                     progressbar=True, return_inferencedata=True,
-                    target_accept=0.9, max_treedepth=10,
+                    target_accept=0.95, max_treedepth=12,
                     cores=1, random_seed=123 + subject_id
                 )
             
-            elapsed = time.time() - start_time
-            print(f"  Sampling completed in {elapsed:.1f} seconds")
+            # Check convergence / 檢查收斂性
+            rhat_max = float(az.rhat(trace1).max())
+            ess_min = float(az.ess(trace1).min())
             
-            # Analyze results for this subject
-            results = self.analyze_subject_results(trace, subject_id)
+            print(f"Stage 1 Convergence: R̂_max = {rhat_max:.3f}, ESS_min = {ess_min:.0f}")
+            print(f"階段1收斂性：R̂_max = {rhat_max:.3f}, ESS_min = {ess_min:.0f}")
             
-            # Save individual results - FIXED JSON SERIALIZATION
-            self.save_individual_results(trace, results, subject_id)
-            
-            return trace
-            
+            if rhat_max < 1.15:  # Slightly relaxed for early stages
+                print("✅ Stage 1 SUCCESSFUL")
+                print("✅ 階段1 成功")
+                stage_traces[1] = trace1
+                stage_results[1] = self.analyze_stage_results(trace1, 1, subject_id)
+                successful_stage = 1
+            else:
+                print("❌ Stage 1 FAILED - Poor convergence")
+                print("❌ 階段1 失敗 - 收斂性差")
+                return None
+                
         except Exception as e:
-            print(f"  ✗ Sampling failed for subject {subject_id}: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"❌ Stage 1 FAILED - Sampling error: {e}")
+            print(f"❌ 階段1 失敗 - 採樣錯誤：{e}")
             return None
-    
-    def analyze_subject_results(self, trace, subject_id):
-        """Analyze results for individual subject"""
-        print(f"  Analyzing results for subject {subject_id}...")
         
-        posterior = trace.posterior
+        # ====================================================================
+        # STAGE 2: SEPARATE PERCEPTUAL VARIABILITIES
+        # 階段2：分離感知變異性
+        # ====================================================================
         
-        # Extract parameter estimates
-        results = {
+        print(f"\n{'-'*40}")
+        print("STAGE 2: Separate Perceptual Variabilities")
+        print("階段2：分離感知變異性")
+        print(f"{'-'*40}")
+        
+        try:
+            model2 = stage2_separate_perceptual_variabilities(
+                rt_data, choice_data, stimloc_data, trace1)
+            
+            with model2:
+                trace2 = pm.sample(
+                    draws=draws, tune=tune, chains=chains,
+                    progressbar=True, return_inferencedata=True,
+                    target_accept=0.95, max_treedepth=12,
+                    cores=1, random_seed=123 + subject_id
+                )
+            
+            rhat_max = float(az.rhat(trace2).max())
+            ess_min = float(az.ess(trace2).min())
+            
+            print(f"Stage 2 Convergence: R̂_max = {rhat_max:.3f}, ESS_min = {ess_min:.0f}")
+            print(f"階段2收斂性：R̂_max = {rhat_max:.3f}, ESS_min = {ess_min:.0f}")
+            
+            if rhat_max < 1.15:
+                print("✅ Stage 2 SUCCESSFUL")
+                print("✅ 階段2 成功")
+                stage_traces[2] = trace2
+                stage_results[2] = self.analyze_stage_results(trace2, 2, subject_id)
+                successful_stage = 2
+            else:
+                print("⚠️  Stage 2 FAILED - Using Stage 1 results")
+                print("⚠️  階段2 失敗 - 使用階段1結果")
+                
+        except Exception as e:
+            print(f"⚠️  Stage 2 FAILED - Sampling error: {e}")
+            print(f"⚠️  階段2 失敗 - 採樣錯誤：{e}")
+        
+        # ====================================================================
+        # STAGE 3: SEPARATE LBA THRESHOLDS
+        # 階段3：分離 LBA 閾值
+        # ====================================================================
+        
+        if successful_stage >= 2:
+            print(f"\n{'-'*40}")
+            print("STAGE 3: Separate LBA Thresholds")
+            print("階段3：分離 LBA 閾值")
+            print(f"{'-'*40}")
+            
+            try:
+                model3 = stage3_separate_lba_thresholds(
+                    rt_data, choice_data, stimloc_data, trace2)
+                
+                with model3:
+                    trace3 = pm.sample(
+                        draws=draws, tune=tune, chains=chains,
+                        progressbar=True, return_inferencedata=True,
+                        target_accept=0.96, max_treedepth=14,
+                        cores=1, random_seed=123 + subject_id
+                    )
+                
+                rhat_max = float(az.rhat(trace3).max())
+                ess_min = float(az.ess(trace3).min())
+                
+                print(f"Stage 3 Convergence: R̂_max = {rhat_max:.3f}, ESS_min = {ess_min:.0f}")
+                print(f"階段3收斂性：R̂_max = {rhat_max:.3f}, ESS_min = {ess_min:.0f}")
+                
+                if rhat_max < 1.15:
+                    print("✅ Stage 3 SUCCESSFUL")
+                    print("✅ 階段3 成功")
+                    stage_traces[3] = trace3
+                    stage_results[3] = self.analyze_stage_results(trace3, 3, subject_id)
+                    successful_stage = 3
+                else:
+                    print("⚠️  Stage 3 FAILED - Using Stage 2 results")
+                    print("⚠️  階段3 失敗 - 使用階段2結果")
+                    
+            except Exception as e:
+                print(f"⚠️  Stage 3 FAILED - Sampling error: {e}")
+                print(f"⚠️  階段3 失敗 - 採樣錯誤：{e}")
+        
+        # ====================================================================
+        # STAGE 4: FULL GRT-LBA MODEL
+        # 階段4：完整 GRT-LBA 模型
+        # ====================================================================
+        
+        if successful_stage >= 3:
+            print(f"\n{'-'*40}")
+            print("STAGE 4: Full GRT-LBA Model")
+            print("階段4：完整 GRT-LBA 模型")
+            print(f"{'-'*40}")
+            
+            try:
+                model4 = stage4_full_grt_lba(
+                    rt_data, choice_data, stimloc_data, trace3)
+                
+                with model4:
+                    trace4 = pm.sample(
+                        draws=draws + 200, tune=tune + 100, chains=chains,  # More sampling for full model
+                        progressbar=True, return_inferencedata=True,
+                        target_accept=0.97, max_treedepth=15,
+                        cores=1, random_seed=123 + subject_id
+                    )
+                
+                rhat_max = float(az.rhat(trace4).max())
+                ess_min = float(az.ess(trace4).min())
+                
+                print(f"Stage 4 Convergence: R̂_max = {rhat_max:.3f}, ESS_min = {ess_min:.0f}")
+                print(f"階段4收斂性：R̂_max = {rhat_max:.3f}, ESS_min = {ess_min:.0f}")
+                
+                if rhat_max < 1.1:  # Stricter for final model
+                    print("✅ Stage 4 SUCCESSFUL - Full model converged!")
+                    print("✅ 階段4 成功 - 完整模型收斂！")
+                    stage_traces[4] = trace4
+                    stage_results[4] = self.analyze_stage_results(trace4, 4, subject_id)
+                    successful_stage = 4
+                else:
+                    print("⚠️  Stage 4 FAILED - Using Stage 3 results")
+                    print("⚠️  階段4 失敗 - 使用階段3結果")
+                    
+            except Exception as e:
+                print(f"⚠️  Stage 4 FAILED - Sampling error: {e}")
+                print(f"⚠️  階段4 失敗 - 採樣錯誤：{e}")
+        
+        # ====================================================================
+        # COMPILE FINAL RESULTS
+        # 編譯最終結果
+        # ====================================================================
+        
+        print(f"\n{'='*40}")
+        print(f"FINAL RESULTS FOR SUBJECT {subject_id}")
+        print(f"受試者 {subject_id} 的最終結果")
+        print(f"{'='*40}")
+        print(f"Successful stages: {list(stage_results.keys())}")
+        print(f"成功階段：{list(stage_results.keys())}")
+        print(f"Using results from Stage {successful_stage}")
+        print(f"使用階段 {successful_stage} 的結果")
+        
+        # Store results for this subject
+        # 存儲此受試者的結果
+        final_result = {
             'subject_id': subject_id,
-            'model_type': 'Individual_GRT_LBA',
-            'parameter_estimates': {}
+            'successful_stages': list(stage_results.keys()),
+            'final_stage_used': successful_stage,
+            'stage_traces': stage_traces,
+            'stage_results': stage_results,
+            'sigma_matrix': self.compute_sigma_matrix(stage_traces[successful_stage]),
+            'convergence_summary': self.summarize_convergence(stage_traces[successful_stage])
         }
         
-        # Key parameters with their interpretations
-        key_params = ['db1', 'db2', 'sp1', 'sp2', 'A', 's', 't0', 'b1', 'b2']
+        # Save individual results
+        # 保存個別結果
+        self.save_subject_results(final_result, subject_id)
         
-        for param in key_params:
-            if param in posterior.data_vars:
+        return final_result
+    
+    def analyze_stage_results(self, trace: az.InferenceData, stage: int, 
+                            subject_id: int) -> Dict[str, Any]:
+        """
+        Analyze results from a specific stage
+        分析特定階段的結果
+        
+        Parameters / 參數:
+        trace: ArviZ InferenceData object / ArviZ 推論數據對象
+        stage: Stage number / 階段編號
+        subject_id: Subject identifier / 受試者標識符
+        
+        Returns / 返回:
+        Dictionary with stage-specific analysis / 包含階段特定分析的字典
+        """
+        
+        posterior = trace.posterior
+        summary = az.summary(trace)
+        
+        # Extract parameter estimates / 提取參數估計
+        results = {
+            'stage': stage,
+            'subject_id': subject_id,
+            'parameter_estimates': {},
+            'convergence_diagnostics': {}
+        }
+        
+        # Parameter estimates / 參數估計
+        for param in posterior.data_vars:
+            if param in summary.index:
                 samples = posterior[param].values.flatten()
                 results['parameter_estimates'][param] = {
                     'mean': float(np.mean(samples)),
@@ -483,567 +931,239 @@ class IndividualSubjectGRTLBA:
                     'median': float(np.median(samples))
                 }
         
-        # Compute sigma matrix for independence testing
-        sigma_matrix, correlation_matrix, available_params = compute_sigma_matrix(
-            trace, param_names=['db1', 'db2', 'sp1', 'sp2'])
-        
-        if sigma_matrix is not None:
-            results['sigma_matrix'] = {
-                'covariance_matrix': sigma_matrix.tolist(),
-                'correlation_matrix': correlation_matrix.tolist(),
-                'parameter_names': available_params
-            }
-            
-            # Test independence assumptions
-            results['independence_tests'] = self.test_independence(correlation_matrix, available_params)
-        
-        # Separability test (sp1 vs sp2)
-        if 'sp1' in posterior.data_vars and 'sp2' in posterior.data_vars:
-            sp1_samples = posterior['sp1'].values.flatten()
-            sp2_samples = posterior['sp2'].values.flatten()
-            sp_ratio = sp1_samples / sp2_samples
-            sp_ratio_hdi = np.percentile(sp_ratio, [2.5, 97.5])
-            
-            results['separability_test'] = {
-                'sp1_sp2_ratio_mean': float(np.mean(sp_ratio)),
-                'sp1_sp2_ratio_hdi': [float(sp_ratio_hdi[0]), float(sp_ratio_hdi[1])],
-                'separability_supported': bool(sp_ratio_hdi[0] < 1.0 < sp_ratio_hdi[1])
-            }
-        
-        # Model diagnostics
+        # Convergence diagnostics / 收斂診斷
         try:
             ess = az.ess(trace)
             rhat = az.rhat(trace)
             
-            results['diagnostics'] = {}
-            for param in key_params:
+            for param in posterior.data_vars:
                 if param in ess.data_vars:
                     ess_val = float(ess[param]) if ess[param].ndim == 0 else float(ess[param].min())
                     rhat_val = float(rhat[param]) if rhat[param].ndim == 0 else float(rhat[param].max())
-                    results['diagnostics'][param] = {
+                    
+                    results['convergence_diagnostics'][param] = {
                         'ess': ess_val,
-                        'rhat': rhat_val
+                        'rhat': rhat_val,
+                        'converged': rhat_val < 1.1
                     }
         except Exception as e:
-            results['diagnostics'] = {'error': str(e)}
-        
-        # Store results
-        self.individual_results[subject_id] = results
-        self.individual_traces[subject_id] = trace
+            results['convergence_diagnostics'] = {'error': str(e)}
         
         return results
     
-    def test_independence(self, correlation_matrix, param_names):
-        """Test parameter independence using correlation matrix"""
-        independence_tests = {}
+    def compute_sigma_matrix(self, trace: az.InferenceData) -> Dict[str, Any]:
+        """
+        Compute Sigma matrix for GRT independence testing
+        計算用於 GRT 獨立性測試的 Sigma 矩陣
         
-        if correlation_matrix is not None and len(param_names) >= 2:
-            # Test all pairwise correlations
-            for i in range(len(param_names)):
-                for j in range(i+1, len(param_names)):
-                    param1, param2 = param_names[i], param_names[j]
+        Purpose / 目的:
+        - Extract covariance matrix of GRT parameters
+        - 提取 GRT 參數的共變異數矩陣
+        - Test independence assumptions
+        - 測試獨立性假設
+        - Provide correlation analysis
+        - 提供相關性分析
+        """
+        
+        posterior = trace.posterior
+        
+        # GRT parameters for Sigma matrix / Sigma 矩陣的 GRT 參數
+        grt_params = ['db1', 'db2', 'sp1', 'sp2']
+        available_params = []
+        param_samples = []
+        
+        # Extract available GRT parameters / 提取可用的 GRT 參數
+        for param in grt_params:
+            if param in posterior.data_vars:
+                samples = posterior[param].values.flatten()
+                param_samples.append(samples)
+                available_params.append(param)
+        
+        if len(param_samples) < 2:
+            return {'error': 'Insufficient GRT parameters for Sigma matrix computation'}
+        
+        # Compute matrices / 計算矩陣
+        samples_matrix = np.column_stack(param_samples)
+        covariance_matrix = np.cov(samples_matrix.T)
+        correlation_matrix = np.corrcoef(samples_matrix.T)
+        
+        # Independence tests / 獨立性測試
+        independence_tests = {}
+        if len(available_params) >= 2:
+            for i in range(len(available_params)):
+                for j in range(i+1, len(available_params)):
+                    param1, param2 = available_params[i], available_params[j]
                     correlation = correlation_matrix[i, j]
                     
-                    # Independence test with threshold
-                    abs_corr = abs(correlation)
                     independence_tests[f'{param1}_{param2}'] = {
                         'correlation': float(correlation),
-                        'independent': bool(abs_corr < 0.3),
-                        'evidence_strength': ('weak' if abs_corr < 0.3 else 
-                                            'moderate' if abs_corr < 0.6 else 'strong')
+                        'abs_correlation': float(abs(correlation)),
+                        'independent': bool(abs(correlation) < 0.3),
+                        'evidence_strength': (
+                            'weak' if abs(correlation) < 0.3 else
+                            'moderate' if abs(correlation) < 0.6 else 'strong'
+                        )
                     }
         
-        return independence_tests
+        # Separability test (sp1 vs sp2) / 可分離性測試 (sp1 vs sp2)
+        separability_test = None
+        if 'sp1' in available_params and 'sp2' in available_params:
+            sp1_samples = posterior['sp1'].values.flatten()
+            sp2_samples = posterior['sp2'].values.flatten()
+            sp_ratio = sp1_samples / sp2_samples
+            ratio_hdi = np.percentile(sp_ratio, [2.5, 97.5])
+            
+            separability_test = {
+                'sp1_sp2_ratio_mean': float(np.mean(sp_ratio)),
+                'sp1_sp2_ratio_hdi': [float(ratio_hdi[0]), float(ratio_hdi[1])],
+                'separability_supported': bool(ratio_hdi[0] < 1.0 < ratio_hdi[1])
+            }
+        
+        return {
+            'parameter_names': available_params,
+            'covariance_matrix': covariance_matrix.tolist(),
+            'correlation_matrix': correlation_matrix.tolist(),
+            'independence_tests': independence_tests,
+            'separability_test': separability_test,
+            'n_parameters': len(available_params)
+        }
     
-    def save_individual_results(self, trace, results, subject_id):
-        """Save individual subject results - FIXED JSON SERIALIZATION"""
-        # Save JSON results with NumPy type conversion
-        results_file = self.results_dir / f'subject_{subject_id}_results.json'
-        safe_json_dump(results, results_file)
+    def summarize_convergence(self, trace: az.InferenceData) -> Dict[str, Any]:
+        """
+        Summarize convergence diagnostics
+        總結收斂診斷
+        """
         
-        # Save trace as pickle
-        trace_file = self.results_dir / f'subject_{subject_id}_trace.pkl'
-        with open(trace_file, 'wb') as f:
-            pickle.dump(trace, f)
-        
-        print(f"  ✓ Results saved for subject {subject_id}")
+        try:
+            ess = az.ess(trace)
+            rhat = az.rhat(trace)
+            
+            # Overall statistics / 整體統計
+            ess_values = [float(ess[param]) if ess[param].ndim == 0 else float(ess[param].min()) 
+                         for param in ess.data_vars]
+            rhat_values = [float(rhat[param]) if rhat[param].ndim == 0 else float(rhat[param].max()) 
+                          for param in rhat.data_vars]
+            
+            return {
+                'mean_ess': float(np.mean(ess_values)),
+                'min_ess': float(np.min(ess_values)),
+                'max_rhat': float(np.max(rhat_values)),
+                'mean_rhat': float(np.mean(rhat_values)),
+                'all_converged': bool(np.max(rhat_values) < 1.1),
+                'n_parameters': len(rhat_values)
+            }
+            
+        except Exception as e:
+            return {'error': str(e)}
     
-    def analyze_all_subjects(self, max_subjects=None, draws=400, tune=200):
-        """Analyze all subjects individually"""
-        print(f"\n{'='*70}")
-        print(f"INDIVIDUAL SUBJECT GRT-LBA ANALYSIS")
-        print(f"Total subjects: {self.n_participants}")
-        print(f"{'='*70}")
+    def save_subject_results(self, results: Dict[str, Any], subject_id: int):
+        """
+        Save individual subject results
+        保存個別受試者結果
+        """
         
-        subjects_to_analyze = self.participants
-        if max_subjects is not None:
-            subjects_to_analyze = subjects_to_analyze[:max_subjects]
-            print(f"Analyzing first {max_subjects} subjects for testing")
+        # Convert numpy types for JSON serialization
+        # 為 JSON 序列化轉換 numpy 類型
+        def convert_numpy_types(obj):
+            if isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {key: convert_numpy_types(value) for key, value in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_numpy_types(item) for item in obj]
+            else:
+                return obj
         
-        successful_analyses = 0
-        failed_analyses = 0
+        # Prepare results for saving (exclude traces for JSON)
+        # 準備保存結果（為 JSON 排除軌跡）
+        save_results = results.copy()
+        traces = save_results.pop('stage_traces', {})
         
-        for subject_id in subjects_to_analyze:
-            try:
-                trace = self.analyze_single_subject(subject_id, draws=draws, tune=tune)
-                if trace is not None:
-                    successful_analyses += 1
-                else:
-                    failed_analyses += 1
-            except Exception as e:
-                print(f"  ✗ Failed to analyze subject {subject_id}: {e}")
+        # Save JSON results / 保存 JSON 結果
+        results_file = self.results_dir / f'subject_{subject_id}_staged_results.json'
+        converted_results = convert_numpy_types(save_results)
+        
+        with open(results_file, 'w') as f:
+            json.dump(converted_results, f, indent=2)
+        
+        # Save traces separately / 分別保存軌跡
+        for stage, trace in traces.items():
+            trace_file = self.results_dir / f'subject_{subject_id}_stage_{stage}_trace.nc'
+            trace.to_netcdf(trace_file)
+        
+        print(f"✅ Results saved for Subject {subject_id}")
+        print(f"✅ 受試者 {subject_id} 的結果已保存")
+
+# ============================================================================
+# MAIN EXECUTION FUNCTIONS
+# 主要執行函數
+# ============================================================================
+
+def run_staged_analysis(max_subjects: Optional[int] = None, 
+                       draws: int = 500, tune: int = 300, 
+                       chains: int = 2) -> StagedGRTLBAAnalyzer:
+    """
+    Run complete staged GRT-LBA analysis
+    運行完整的階段式 GRT-LBA 分析
+    
+    Parameters / 參數:
+    max_subjects: Maximum number of subjects to analyze / 要分析的最大受試者數
+    draws: MCMC draws per stage / 每階段 MCMC 抽樣數
+    tune: MCMC tuning steps / MCMC 調整步數
+    chains: Number of chains / 鏈數量
+    
+    Returns / 返回:
+    StagedGRTLBAAnalyzer: Complete analyzer with results / 包含結果的完整分析器
+    """
+    
+    print("="*80)
+    print("STAGED GRT-LBA BAYESIAN ANALYSIS")
+    print("階段式 GRT-LBA 貝葉斯分析")
+    print("="*80)
+    
+    print(f"Analysis parameters / 分析參數:")
+    print(f"  Draws per stage / 每階段抽樣數: {draws}")
+    print(f"  Tuning steps / 調整步數: {tune}")
+    print(f"  Chains / 鏈數: {chains}")
+    print(f"  Max subjects / 最大受試者數: {max_subjects if max_subjects else 'All'}")
+    
+    # Initialize analyzer / 初始化分析器
+    analyzer = StagedGRTLBAAnalyzer()
+    
+    # Select subjects to analyze / 選擇要分析的受試者
+    subjects_to_analyze = analyzer.participants
+    if max_subjects is not None:
+        subjects_to_analyze = subjects_to_analyze[:max_subjects]
+        print(f"Analyzing first {max_subjects} subjects for testing")
+        print(f"為測試分析前 {max_subjects} 名受試者")
+    
+    # Run staged analysis for each subject / 對每名受試者運行階段式分析
+    successful_analyses = 0
+    failed_analyses = 0
+    
+    for subject_id in subjects_to_analyze:
+        try:
+            print(f"\n{'='*20} Processing Subject {subject_id} {'='*20}")
+            print(f"\n{'='*20} 處理受試者 {subject_id} {'='*20}")
+            
+            result = analyzer.analyze_single_subject_staged(
+                subject_id, draws=draws, tune=tune, chains=chains)
+            
+            if result is not None:
+                analyzer.final_results[subject_id] = result
+                successful_analyses += 1
+                print(f"✅ Subject {subject_id} analysis completed successfully")
+                print(f"✅ 受試者 {subject_id} 分析成功完成")
+            else:
                 failed_analyses += 1
-        
-        print(f"\n{'='*50}")
-        print(f"ANALYSIS SUMMARY")
-        print(f"{'='*50}")
-        print(f"Successful analyses: {successful_analyses}")
-        print(f"Failed analyses: {failed_analyses}")
-        print(f"Success rate: {successful_analyses/(successful_analyses+failed_analyses)*100:.1f}%")
-        
-        # Combine results
-        if successful_analyses > 0:
-            self.combine_results()
-    
-    def combine_results(self):
-        """Combine individual subject results into group analysis"""
-        print(f"\n{'='*50}")
-        print(f"COMBINING INDIVIDUAL RESULTS")
-        print(f"{'='*50}")
-        
-        if not self.individual_results:
-            print("No individual results to combine")
-            return
-        
-        # Initialize combined results structure
-        self.combined_results = {
-            'analysis_type': 'Combined_Individual_GRT_LBA',
-            'n_subjects': len(self.individual_results),
-            'subject_ids': list(self.individual_results.keys()),
-            'group_parameter_estimates': {},
-            'group_sigma_matrices': {},
-            'group_independence_tests': {},
-            'group_separability_tests': {},
-            'summary_statistics': {}
-        }
-        
-        # Combine parameter estimates
-        key_params = ['db1', 'db2', 'sp1', 'sp2', 'A', 's', 't0', 'b1', 'b2']
-        
-        for param in key_params:
-            param_values = []
-            for subject_id, results in self.individual_results.items():
-                if param in results['parameter_estimates']:
-                    param_values.append(results['parameter_estimates'][param]['mean'])
-            
-            if param_values:
-                self.combined_results['group_parameter_estimates'][param] = {
-                    'group_mean': float(np.mean(param_values)),
-                    'group_std': float(np.std(param_values)),
-                    'group_median': float(np.median(param_values)),
-                    'individual_values': param_values,
-                    'n_subjects': len(param_values)
-                }
-        
-        # Combine sigma matrices
-        sigma_matrices = []
-        correlation_matrices = []
-        
-        for subject_id, results in self.individual_results.items():
-            if 'sigma_matrix' in results:
-                sigma_matrices.append(np.array(results['sigma_matrix']['covariance_matrix']))
-                correlation_matrices.append(np.array(results['sigma_matrix']['correlation_matrix']))
-        
-        if sigma_matrices:
-            # Average covariance and correlation matrices across subjects
-            mean_sigma = np.mean(sigma_matrices, axis=0)
-            mean_correlation = np.mean(correlation_matrices, axis=0)
-            
-            self.combined_results['group_sigma_matrices'] = {
-                'mean_covariance_matrix': mean_sigma.tolist(),
-                'mean_correlation_matrix': mean_correlation.tolist(),
-                'individual_covariance_matrices': [s.tolist() for s in sigma_matrices],
-                'individual_correlation_matrices': [c.tolist() for c in correlation_matrices],
-                'parameter_names': self.individual_results[list(self.individual_results.keys())[0]]['sigma_matrix']['parameter_names']
-            }
-        
-        # Combine independence tests
-        independence_summary = {}
-        for subject_id, results in self.individual_results.items():
-            if 'independence_tests' in results:
-                for test_name, test_result in results['independence_tests'].items():
-                    if test_name not in independence_summary:
-                        independence_summary[test_name] = {
-                            'correlations': [],
-                            'independent_count': 0,
-                            'total_count': 0
-                        }
-                    
-                    independence_summary[test_name]['correlations'].append(test_result['correlation'])
-                    independence_summary[test_name]['total_count'] += 1
-                    if test_result['independent']:
-                        independence_summary[test_name]['independent_count'] += 1
-        
-        # Summarize independence tests
-        for test_name, summary in independence_summary.items():
-            if summary['total_count'] > 0:
-                self.combined_results['group_independence_tests'][test_name] = {
-                    'mean_correlation': float(np.mean(summary['correlations'])),
-                    'std_correlation': float(np.std(summary['correlations'])),
-                    'independence_rate': float(summary['independent_count'] / summary['total_count']),
-                    'individual_correlations': summary['correlations'],
-                    'group_independence_supported': summary['independent_count'] / summary['total_count'] > 0.5
-                }
-        
-        # Combine separability tests
-        separability_ratios = []
-        separability_supported_count = 0
-        
-        for subject_id, results in self.individual_results.items():
-            if 'separability_test' in results:
-                separability_ratios.append(results['separability_test']['sp1_sp2_ratio_mean'])
-                if results['separability_test']['separability_supported']:
-                    separability_supported_count += 1
-        
-        if separability_ratios:
-            self.combined_results['group_separability_tests'] = {
-                'group_mean_sp_ratio': float(np.mean(separability_ratios)),
-                'group_std_sp_ratio': float(np.std(separability_ratios)),
-                'individual_sp_ratios': separability_ratios,
-                'separability_support_rate': float(separability_supported_count / len(separability_ratios)),
-                'group_separability_supported': separability_supported_count / len(separability_ratios) > 0.5
-            }
-        
-        # Summary statistics
-        self.combined_results['summary_statistics'] = {
-            'total_subjects_analyzed': len(self.individual_results),
-            'parameters_estimated_per_subject': len(key_params),
-            'average_ess': self.compute_average_ess(),
-            'average_rhat': self.compute_average_rhat(),
-            'model_convergence_rate': self.compute_convergence_rate()
-        }
-        
-        # Save combined results with safe JSON serialization
-        self.save_combined_results()
-        
-        # Print summary
-        self.print_combined_summary()
-    
-    def compute_average_ess(self):
-        """Compute average Effective Sample Size across subjects and parameters"""
-        all_ess = []
-        for subject_id, results in self.individual_results.items():
-            if 'diagnostics' in results and isinstance(results['diagnostics'], dict):
-                for param, diag in results['diagnostics'].items():
-                    if isinstance(diag, dict) and 'ess' in diag:
-                        all_ess.append(diag['ess'])
-        
-        return float(np.mean(all_ess)) if all_ess else None
-    
-    def compute_average_rhat(self):
-        """Compute average R-hat across subjects and parameters"""
-        all_rhat = []
-        for subject_id, results in self.individual_results.items():
-            if 'diagnostics' in results and isinstance(results['diagnostics'], dict):
-                for param, diag in results['diagnostics'].items():
-                    if isinstance(diag, dict) and 'rhat' in diag:
-                        all_rhat.append(diag['rhat'])
-        
-        return float(np.mean(all_rhat)) if all_rhat else None
-    
-    def compute_convergence_rate(self):
-        """Compute rate of successful convergence (R-hat < 1.1)"""
-        convergent_count = 0
-        total_count = 0
-        
-        for subject_id, results in self.individual_results.items():
-            if 'diagnostics' in results and isinstance(results['diagnostics'], dict):
-                for param, diag in results['diagnostics'].items():
-                    if isinstance(diag, dict) and 'rhat' in diag:
-                        total_count += 1
-                        if diag['rhat'] < 1.1:
-                            convergent_count += 1
-        
-        return float(convergent_count / total_count) if total_count > 0 else None
-    
-    def save_combined_results(self):
-        """Save combined results to file with safe JSON serialization"""
-        combined_file = self.results_dir / 'combined_results.json'
-        safe_json_dump(self.combined_results, combined_file)
-        
-        print(f"✓ Combined results saved to {combined_file}")
-    
-    def print_combined_summary(self):
-        """Print summary of combined results"""
-        print(f"\n{'='*60}")
-        print(f"COMBINED GROUP ANALYSIS SUMMARY")
-        print(f"{'='*60}")
-        
-        print(f"Subjects analyzed: {self.combined_results['n_subjects']}")
-        print(f"Subject IDs: {self.combined_results['subject_ids']}")
-        
-        # Group parameter estimates
-        print(f"\nGROUP PARAMETER ESTIMATES:")
-        print(f"{'-'*40}")
-        for param, estimates in self.combined_results['group_parameter_estimates'].items():
-            print(f"{param:>6}: {estimates['group_mean']:.3f} ± {estimates['group_std']:.3f} "
-                  f"(n={estimates['n_subjects']})")
-        
-        # Group independence tests
-        if self.combined_results['group_independence_tests']:
-            print(f"\nGROUP INDEPENDENCE TESTS:")
-            print(f"{'-'*40}")
-            for test_name, test_result in self.combined_results['group_independence_tests'].items():
-                independence_rate = test_result['independence_rate']
-                mean_corr = test_result['mean_correlation']
-                support = "✓" if test_result['group_independence_supported'] else "✗"
-                print(f"{test_name}: r={mean_corr:.3f}, independence rate={independence_rate:.1%} {support}")
-        
-        # Group separability tests
-        if self.combined_results['group_separability_tests']:
-            print(f"\nGROUP SEPARABILITY TEST:")
-            print(f"{'-'*40}")
-            sep_test = self.combined_results['group_separability_tests']
-            support_rate = sep_test['separability_support_rate']
-            mean_ratio = sep_test['group_mean_sp_ratio']
-            support = "✓" if sep_test['group_separability_supported'] else "✗"
-            print(f"sp1/sp2 ratio: {mean_ratio:.3f}, support rate: {support_rate:.1%} {support}")
-        
-        # Model quality
-        if self.combined_results['summary_statistics']:
-            stats = self.combined_results['summary_statistics']
-            print(f"\nMODEL QUALITY:")
-            print(f"{'-'*40}")
-            if stats['average_ess']:
-                print(f"Average ESS: {stats['average_ess']:.0f}")
-            if stats['average_rhat']:
-                print(f"Average R̂: {stats['average_rhat']:.3f}")
-            if stats['model_convergence_rate']:
-                print(f"Convergence rate: {stats['model_convergence_rate']:.1%}")
-        
-        # Sigma matrix summary
-        if self.combined_results['group_sigma_matrices']:
-            print(f"\nGROUP SIGMA MATRIX (Mean Correlation):")
-            print(f"{'-'*40}")
-            corr_matrix = np.array(self.combined_results['group_sigma_matrices']['mean_correlation_matrix'])
-            param_names = self.combined_results['group_sigma_matrices']['parameter_names']
-            
-            # Print correlation matrix
-            print("     ", end="")
-            for name in param_names:
-                print(f"{name:>6}", end="")
-            print()
-            
-            for i, name in enumerate(param_names):
-                print(f"{name:>4}:", end="")
-                for j in range(len(param_names)):
-                    print(f"{corr_matrix[i,j]:6.3f}", end="")
-                print()
-    
-    def load_existing_results(self):
-        """Load existing individual results from files"""
-        print("Loading existing individual results...")
-        
-        loaded_count = 0
-        for subject_id in self.participants:
-            results_file = self.results_dir / f'subject_{subject_id}_results.json'
-            trace_file = self.results_dir / f'subject_{subject_id}_trace.pkl'
-            
-            if results_file.exists():
-                try:
-                    with open(results_file, 'r') as f:
-                        results = json.load(f)
-                    self.individual_results[subject_id] = results
-                    
-                    if trace_file.exists():
-                        with open(trace_file, 'rb') as f:
-                            trace = pickle.load(f)
-                        self.individual_traces[subject_id] = trace
-                    
-                    loaded_count += 1
-                    print(f"  ✓ Loaded results for subject {subject_id}")
-                except Exception as e:
-                    print(f"  ✗ Failed to load subject {subject_id}: {e}")
-        
-        print(f"Loaded results for {loaded_count} subjects")
-        
-        if loaded_count > 0:
-            self.combine_results()
-        
-        return loaded_count
-    
-    def generate_detailed_report(self):
-        """Generate detailed analysis report"""
-        print(f"\n{'='*70}")
-        print(f"DETAILED INDIVIDUAL SUBJECT GRT-LBA REPORT")
-        print(f"{'='*70}")
-        
-        if not self.individual_results:
-            print("No results available for detailed report")
-            return
-        
-        # Individual subject summaries
-        print(f"\nINDIVIDUAL SUBJECT SUMMARIES:")
-        print(f"{'='*50}")
-        
-        for subject_id in sorted(self.individual_results.keys()):
-            results = self.individual_results[subject_id]
-            
-            print(f"\nSubject {subject_id}:")
-            print(f"{'-'*20}")
-            
-            # Parameter estimates
-            if 'parameter_estimates' in results:
-                key_params = ['db1', 'db2', 'sp1', 'sp2']
-                for param in key_params:
-                    if param in results['parameter_estimates']:
-                        est = results['parameter_estimates'][param]
-                        print(f"  {param}: {est['mean']:.3f} [{est['hdi_2.5']:.3f}, {est['hdi_97.5']:.3f}]")
-            
-            # Separability test
-            if 'separability_test' in results:
-                sep_test = results['separability_test']
-                support = "✓" if sep_test['separability_supported'] else "✗"
-                print(f"  Separability: {sep_test['sp1_sp2_ratio_mean']:.3f} {support}")
-            
-            # Independence tests
-            if 'independence_tests' in results:
-                indep_count = sum(1 for test in results['independence_tests'].values() 
-                                if test['independent'])
-                total_count = len(results['independence_tests'])
-                print(f"  Independence: {indep_count}/{total_count} tests passed")
-            
-            # Model quality
-            if 'diagnostics' in results and isinstance(results['diagnostics'], dict):
-                avg_rhat = np.mean([diag['rhat'] for diag in results['diagnostics'].values() 
-                                  if isinstance(diag, dict) and 'rhat' in diag])
-                print(f"  Model quality: R̂={avg_rhat:.3f}")
-        
-        # Group-level conclusions
-        print(f"\n{'='*50}")
-        print(f"GROUP-LEVEL CONCLUSIONS")
-        print(f"{'='*50}")
-        
-        if self.combined_results:
-            # Independence conclusion
-            if self.combined_results['group_independence_tests']:
-                independence_results = []
-                for test_name, test_result in self.combined_results['group_independence_tests'].items():
-                    independence_results.append(test_result['group_independence_supported'])
+                print(f"❌ Subject {subject_id} analysis failed")
+                print(f"❌ 受試者 {subject_id} 分析失敗")
                 
-                overall_independence = sum(independence_results) / len(independence_results)
-                print(f"Overall Independence Support: {overall_independence:.1%}")
-                
-                if overall_independence > 0.7:
-                    print("✓ Strong evidence for parameter independence (GRT assumption supported)")
-                elif overall_independence > 0.4:
-                    print("~ Mixed evidence for parameter independence")
-                else:
-                    print("✗ Weak evidence for parameter independence (GRT assumption violated)")
-            
-            # Separability conclusion
-            if self.combined_results['group_separability_tests']:
-                sep_test = self.combined_results['group_separability_tests']
-                support_rate = sep_test['separability_support_rate']
-                
-                print(f"Overall Separability Support: {support_rate:.1%}")
-                
-                if support_rate > 0.7:
-                    print("✓ Strong evidence for perceptual separability (GRT assumption supported)")
-                elif support_rate > 0.4:
-                    print("~ Mixed evidence for perceptual separability")
-                else:
-                    print("✗ Weak evidence for perceptual separability (GRT assumption violated)")
-            
-            # Overall conclusion
-            print(f"\nOVERALL GRT ASSUMPTION TESTING:")
-            if (self.combined_results.get('group_independence_tests') and 
-                self.combined_results.get('group_separability_tests')):
-                
-                independence_support = np.mean([test['group_independence_supported'] 
-                                              for test in self.combined_results['group_independence_tests'].values()])
-                separability_support = self.combined_results['group_separability_tests']['group_separability_supported']
-                
-                if independence_support and separability_support:
-                    print("✓ GRT assumptions are generally SUPPORTED across subjects")
-                elif independence_support or separability_support:
-                    print("~ GRT assumptions have MIXED support across subjects")
-                else:
-                    print("✗ GRT assumptions are generally VIOLATED across subjects")
-
-def run_individual_subject_analysis(max_subjects=None, draws=400, tune=200):
-    """
-    Main function to run individual subject GRT-LBA analysis
-    
-    Parameters:
-    -----------
-    max_subjects : int, optional
-        Maximum number of subjects to analyze (for testing)
-    draws : int
-        MCMC draws per subject  
-    tune : int
-        MCMC tuning steps per subject
-        
-    Returns:
-    --------
-    analyzer : IndividualSubjectGRTLBA
-        Analyzer object with all results
-    """
-    print("STARTING INDIVIDUAL SUBJECT GRT-LBA ANALYSIS")
-    print("Each subject analyzed separately, then results combined")
-    print("="*70)
-    
-    # Initialize analyzer
-    analyzer = IndividualSubjectGRTLBA('GRT_LBA.csv')
-    
-    # Check for existing results
-    existing_count = analyzer.load_existing_results()
-    
-    if existing_count > 0:
-        print(f"\nFound existing results for {existing_count} subjects")
-        choice = input("Do you want to (1) use existing results, (2) reanalyze all, or (3) analyze missing only? [1/2/3]: ")
-        
-        if choice == '1':
-            print("Using existing results...")
-            analyzer.generate_detailed_report()
-            return analyzer
-        elif choice == '2':
-            print("Reanalyzing all subjects...")
-            analyzer.individual_results = {}
-            analyzer.individual_traces = {}
-        elif choice == '3':
-            print("Analyzing missing subjects only...")
-            pass
-    
-    # Run analysis
-    try:
-        analyzer.analyze_all_subjects(max_subjects=max_subjects, draws=draws, tune=tune)
-        
-        # Generate detailed report
-        analyzer.generate_detailed_report()
-        
-        print(f"\n{'='*70}")
-        print(f"INDIVIDUAL SUBJECT GRT-LBA ANALYSIS COMPLETED")
-        print(f"{'='*70}")
-        print(f"Individual results saved in: {analyzer.results_dir}")
-        print(f"Combined results saved as: combined_results.json")
-        
-        return analyzer
-        
-    except Exception as e:
-        print(f"\n✗ Analysis failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-def quick_test_analysis():
-    """Quick test with subset of subjects"""
-    print("Running quick test with 3 subjects...")
-    return run_individual_subject_analysis(max_subjects=3, draws=200, tune=100)
-
-if __name__ == "__main__":
-    # For quick testing - uncomment to test with small subset
-    # analyzer = quick_test_analysis()
-    
-    # For full analysis
-    analyzer = run_individual_subject_analysis()
+        except Exception as e:
+            failed_analyses += 1
+            print(f"❌ Subject {subject_id} analysis failed with error: {e}")
+            print(f"❌ 受試者 {subject_id}
