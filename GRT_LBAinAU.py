@@ -21,7 +21,6 @@ import pandas as pd
 import pymc as pm
 import pytensor.tensor as pt
 import arviz as az
-import scipy.stats as stats
 import time
 from typing import Dict, Optional
 
@@ -126,8 +125,8 @@ def prepare_line_tilt_data(df: pd.DataFrame) -> pd.DataFrame:
     return df_clean
 
 # ============================================================================
-# 第二部分：雙通道LBA似然函數
-# Part 2: Dual-Channel LBA Likelihood Function
+# 第二部分：雙通道LBA似然函數 (修正版)
+# Part 2: Dual-Channel LBA Likelihood Function (Fixed Version)
 # ============================================================================
 
 def compute_dual_lba_likelihood(left_tilt, right_tilt, choice, rt, 
@@ -135,8 +134,8 @@ def compute_dual_lba_likelihood(left_tilt, right_tilt, choice, rt,
                                left_drift, right_drift,
                                noise_left, noise_right):
     """
-    計算雙通道LBA模型的似然函數
-    Compute likelihood for dual-channel LBA model
+    計算雙通道LBA模型的似然函數 (張量版本)
+    Compute likelihood for dual-channel LBA model (Tensor version)
     
     目的 / Purpose:
     模擬兩個獨立的LBA通道分別處理左右線條傾斜判斷
@@ -159,119 +158,131 @@ def compute_dual_lba_likelihood(left_tilt, right_tilt, choice, rt,
     - noise_right: 右通道雜訊 / Right channel noise
     """
     
-    try:
-        # LBA模型固定參數 / Fixed LBA parameters
-        # 目的：設定LBA模型的基本結構參數
-        # Purpose: Set basic structural parameters for LBA model
-        A = 0.4      # 起始點變異 / Start point variability
-        s = 0.3      # 漂移率標準差 / Drift rate standard deviation
-        t0 = 0.2     # 非決策時間 / Non-decision time
-        b = A + 0.6  # 決策閾值 / Decision threshold
+    # LBA模型固定參數 / Fixed LBA parameters
+    # 目的：設定LBA模型的基本結構參數
+    # Purpose: Set basic structural parameters for LBA model
+    A = 0.4      # 起始點變異 / Start point variability
+    s = 0.3      # 漂移率標準差 / Drift rate standard deviation
+    t0 = 0.2     # 非決策時間 / Non-decision time
+    b = A + 0.6  # 決策閾值 / Decision threshold
+    
+    # 計算決策時間 / Calculate decision time
+    # 目的：從總反應時間中減去非決策時間
+    # Purpose: Subtract non-decision time from total reaction time
+    # 來源：rt參數 (從CSV的RT欄位)
+    # Source: rt parameter (from RT column in CSV)
+    decision_time = pt.maximum(rt - t0, 0.001)
+    
+    # === 左通道LBA計算 / Left Channel LBA Calculation ===
+    
+    # 左通道證據累積方向 / Left channel evidence accumulation direction
+    # 目的：根據實際刺激和偏好計算證據強度
+    # Purpose: Calculate evidence strength based on actual stimulus and bias
+    
+    # 使用張量條件判斷而非Python if / Use tensor conditional instead of Python if
+    left_evidence_direction = pt.where(left_tilt > left_bias, 1.0, -1.0)
+    left_evidence_strength = left_drift * left_evidence_direction
+    
+    # 左通道漂移率計算 / Left channel drift rate calculation
+    # 目的：結合刺激強度和個體偏好
+    # Purpose: Combine stimulus strength and individual bias
+    v_left_correct = pt.maximum(pt.abs(left_evidence_strength) + noise_left, 0.1)
+    v_left_incorrect = pt.maximum(0.5 * left_drift + noise_left, 0.1)
+    
+    # === 右通道LBA計算 / Right Channel LBA Calculation ===
+    
+    # 右通道證據累積 / Right channel evidence accumulation
+    # 目的：獨立處理右線條傾斜判斷
+    # Purpose: Independently process right line tilt judgment
+    right_evidence_direction = pt.where(right_tilt > right_bias, 1.0, -1.0)
+    right_evidence_strength = right_drift * right_evidence_direction
+    
+    v_right_correct = pt.maximum(pt.abs(right_evidence_strength) + noise_right, 0.1)
+    v_right_incorrect = pt.maximum(0.5 * right_drift + noise_right, 0.1)
+    
+    # === 四選項組合判斷 / Four-choice combination judgment ===
+    
+    # 目的：將兩個獨立的LBA通道結果組合成四選項判斷
+    # Purpose: Combine two independent LBA channel results into four-choice judgment
+    
+    # 判斷左右通道傾向 / Determine left/right channel preferences
+    # 使用張量條件判斷 / Use tensor conditional judgments
+    left_decision = pt.where(left_tilt > left_bias, 1.0, 0.0)
+    right_decision = pt.where(right_tilt > right_bias, 1.0, 0.0)
+    
+    # 組合決策映射 / Combined decision mapping
+    # 目的：將左右通道決策組合為最終選擇
+    # Purpose: Combine left/right channel decisions into final choice
+    predicted_choice = left_decision * 2 + right_decision
+    
+    # === LBA似然計算 / LBA Likelihood Calculation ===
+    
+    # 選擇獲勝者和失敗者的漂移率 / Select winner and loser drift rates
+    # 目的：根據實際選擇確定哪個累加器獲勝
+    # Purpose: Determine which accumulator wins based on actual choice
+    
+    # 使用張量條件選擇 / Use tensor conditional selection
+    choice_correct = pt.eq(choice, predicted_choice)
+    
+    # 正確選擇的漂移率 / Drift rates for correct choice
+    v_winner_correct = (v_left_correct + v_right_correct) / 2
+    v_loser1_correct = (v_left_incorrect + v_right_correct) / 2
+    v_loser2_correct = (v_left_correct + v_right_incorrect) / 2  
+    v_loser3_correct = (v_left_incorrect + v_right_incorrect) / 2
+    
+    # 錯誤選擇的漂移率 / Drift rates for incorrect choice
+    v_winner_incorrect = (v_left_incorrect + v_right_incorrect) / 2
+    v_loser1_incorrect = (v_left_correct + v_right_incorrect) / 2
+    v_loser2_incorrect = (v_left_incorrect + v_right_correct) / 2
+    v_loser3_incorrect = (v_left_correct + v_right_correct) / 2
+    
+    # 根據選擇正確性選取漂移率 / Select drift rates based on choice correctness
+    v_winner = pt.where(choice_correct, v_winner_correct, v_winner_incorrect)
+    v_loser1 = pt.where(choice_correct, v_loser1_correct, v_loser1_incorrect)
+    v_loser2 = pt.where(choice_correct, v_loser2_correct, v_loser2_incorrect)
+    v_loser3 = pt.where(choice_correct, v_loser3_correct, v_loser3_incorrect)
+    
+    # LBA密度函數計算 / LBA density function calculation
+    # 目的：計算給定參數下觀察到此反應時間和選擇的機率
+    # Purpose: Calculate probability of observing this RT and choice given parameters
+    
+    sqrt_t = pt.sqrt(decision_time)
+    
+    # 獲勝累加器的似然 / Winner accumulator likelihood
+    z1_win = pt.clip((v_winner * decision_time - b) / sqrt_t, -6, 6)
+    z2_win = pt.clip((v_winner * decision_time - A) / sqrt_t, -6, 6)
+    
+    # 使用PyMC的常態分佈函數 / Use PyMC's normal distribution functions
+    from pytensor.tensor import erf
+    
+    # 標準常態累積分佈函數 / Standard normal CDF
+    def normal_cdf(x):
+        return 0.5 * (1 + erf(x / pt.sqrt(2)))
+    
+    # 標準常態機率密度函數 / Standard normal PDF
+    def normal_pdf(x):
+        return pt.exp(-0.5 * x**2) / pt.sqrt(2 * pt.pi)
+    
+    winner_cdf = normal_cdf(z1_win) - normal_cdf(z2_win)
+    winner_pdf = (normal_pdf(z1_win) - normal_pdf(z2_win)) / sqrt_t
+    winner_likelihood = pt.maximum((v_winner / A) * winner_cdf + winner_pdf / A, 1e-10)
+    
+    # 失敗累加器的生存函數 / Loser accumulators survival function
+    survival_prob = 1.0
+    
+    for v_loser in [v_loser1, v_loser2, v_loser3]:
+        z1_lose = pt.clip((v_loser * decision_time - b) / sqrt_t, -6, 6)
+        z2_lose = pt.clip((v_loser * decision_time - A) / sqrt_t, -6, 6)
         
-        # 計算決策時間 / Calculate decision time
-        # 目的：從總反應時間中減去非決策時間
-        # Purpose: Subtract non-decision time from total reaction time
-        # 來源：rt參數 (從CSV的RT欄位)
-        # Source: rt parameter (from RT column in CSV)
-        decision_time = np.maximum(rt - t0, 0.001)
-        
-        # === 左通道LBA計算 / Left Channel LBA Calculation ===
-        
-        # 左通道證據累積方向 / Left channel evidence accumulation direction
-        # 目的：根據實際刺激和偏好計算證據強度
-        # Purpose: Calculate evidence strength based on actual stimulus and bias
-        
-        # 如果左線條是直線(1)，向"直線"累積證據；如果是斜線(0)，向"斜線"累積證據
-        # If left line is vertical(1), accumulate evidence for "vertical"; if diagonal(0), for "diagonal"
-        left_evidence_strength = left_drift * (1 if left_tilt > left_bias else -1)
-        
-        # 左通道漂移率計算 / Left channel drift rate calculation
-        # 目的：結合刺激強度和個體偏好
-        # Purpose: Combine stimulus strength and individual bias
-        v_left_correct = np.maximum(np.abs(left_evidence_strength) + noise_left, 0.1)
-        v_left_incorrect = np.maximum(0.5 * left_drift + noise_left, 0.1)
-        
-        # === 右通道LBA計算 / Right Channel LBA Calculation ===
-        
-        # 右通道證據累積 / Right channel evidence accumulation
-        # 目的：獨立處理右線條傾斜判斷
-        # Purpose: Independently process right line tilt judgment
-        right_evidence_strength = right_drift * (1 if right_tilt > right_bias else -1)
-        
-        v_right_correct = np.maximum(np.abs(right_evidence_strength) + noise_right, 0.1)
-        v_right_incorrect = np.maximum(0.5 * right_drift + noise_right, 0.1)
-        
-        # === 四選項組合判斷 / Four-choice combination judgment ===
-        
-        # 目的：將兩個獨立的LBA通道結果組合成四選項判斷
-        # Purpose: Combine two independent LBA channel results into four-choice judgment
-        
-        # 判斷左通道傾向 / Determine left channel preference
-        # 0: 傾向斜線, 1: 傾向直線
-        # 0: prefer diagonal, 1: prefer vertical
-        left_decision = 1 if left_tilt > left_bias else 0
-        
-        # 判斷右通道傾向 / Determine right channel preference  
-        right_decision = 1 if right_tilt > right_bias else 0
-        
-        # 組合決策映射 / Combined decision mapping
-        # 目的：將左右通道決策組合為最終選擇
-        # Purpose: Combine left/right channel decisions into final choice
-        predicted_choice = left_decision * 2 + right_decision
-        
-        # === LBA似然計算 / LBA Likelihood Calculation ===
-        
-        # 選擇獲勝者和失敗者的漂移率 / Select winner and loser drift rates
-        # 目的：根據實際選擇確定哪個累加器獲勝
-        # Purpose: Determine which accumulator wins based on actual choice
-        
-        if choice == predicted_choice:
-            # 正確選擇的情況 / Correct choice case
-            v_winner = (v_left_correct + v_right_correct) / 2
-            v_loser1 = (v_left_incorrect + v_right_correct) / 2
-            v_loser2 = (v_left_correct + v_right_incorrect) / 2  
-            v_loser3 = (v_left_incorrect + v_right_incorrect) / 2
-        else:
-            # 錯誤選擇的情況 / Incorrect choice case
-            v_winner = (v_left_incorrect + v_right_incorrect) / 2
-            v_loser1 = (v_left_correct + v_right_incorrect) / 2
-            v_loser2 = (v_left_incorrect + v_right_correct) / 2
-            v_loser3 = (v_left_correct + v_right_correct) / 2
-        
-        # LBA密度函數計算 / LBA density function calculation
-        # 目的：計算給定參數下觀察到此反應時間和選擇的機率
-        # Purpose: Calculate probability of observing this RT and choice given parameters
-        
-        sqrt_t = np.sqrt(decision_time)
-        
-        # 獲勝累加器的似然 / Winner accumulator likelihood
-        z1_win = np.clip((v_winner * decision_time - b) / sqrt_t, -6, 6)
-        z2_win = np.clip((v_winner * decision_time - A) / sqrt_t, -6, 6)
-        
-        winner_cdf = stats.norm.cdf(z1_win) - stats.norm.cdf(z2_win)
-        winner_pdf = (stats.norm.pdf(z1_win) - stats.norm.pdf(z2_win)) / sqrt_t
-        winner_likelihood = np.maximum((v_winner / A) * winner_cdf + winner_pdf / A, 1e-10)
-        
-        # 失敗累加器的生存函數 / Loser accumulators survival function
-        survival_prob = 1.0
-        
-        for v_loser in [v_loser1, v_loser2, v_loser3]:
-            z1_lose = np.clip((v_loser * decision_time - b) / sqrt_t, -6, 6)
-            z2_lose = np.clip((v_loser * decision_time - A) / sqrt_t, -6, 6)
-            
-            loser_cdf = stats.norm.cdf(z1_lose) - stats.norm.cdf(z2_lose)
-            survival_prob *= np.maximum(1 - loser_cdf, 1e-6)
-        
-        # 總似然 / Total likelihood
-        # 目的：計算完整的LBA模型似然
-        # Purpose: Calculate complete LBA model likelihood
-        total_likelihood = winner_likelihood * survival_prob
-        
-        return np.log(np.maximum(total_likelihood, 1e-12))
-        
-    except Exception as e:
-        print(f"LBA似然計算錯誤 / LBA likelihood calculation error: {e}")
-        return -1000.0
+        loser_cdf = normal_cdf(z1_lose) - normal_cdf(z2_lose)
+        survival_prob *= pt.maximum(1 - loser_cdf, 1e-6)
+    
+    # 總似然 / Total likelihood
+    # 目的：計算完整的LBA模型似然
+    # Purpose: Calculate complete LBA model likelihood
+    total_likelihood = winner_likelihood * survival_prob
+    
+    return pt.log(pt.maximum(total_likelihood, 1e-12))
 
 # ============================================================================
 # 第三部分：受試者分析函數
@@ -538,6 +549,10 @@ class LineTiltGRTAnalyzer:
         self._show_data_summary()
     
     def _show_data_summary(self):
+        """
+        顯示數據摘要統計
+        Show data summary statistics
+        """
         
         print("\n數據摘要 / Data Summary:")
         print(f"  總試驗數 / Total trials: {len(self.df)}")
