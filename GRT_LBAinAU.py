@@ -43,22 +43,22 @@ def prepare_line_tilt_data(df: pd.DataFrame) -> pd.DataFrame:
     - df: Raw CSV data containing Stimulus column (1,2,3,4)
     
     刺激映射 / Stimulus Mapping:
-    1 → 左上角 → 左線條:\, 右線條:| → (0, 1)
-    2 → 左下角 → 左線條:\, 右線條:/ → (0, 0) 
-    3 → 右上角 → 左線條:|, 右線條:| → (1, 1)
-    4 → 右下角 → 左線條:|, 右線條:/ → (1, 0)
+    0 → 左上角 → 左線條:\, 右線條:| → (0, 1)
+    1 → 左下角 → 左線條:\, 右線條:/ → (0, 0) 
+    2 → 右上角 → 左線條:|, 右線條:| → (1, 1)
+    3 → 右下角 → 左線條:|, 右線條:/ → (1, 0)
     """
     
     print("開始數據預處理 / Starting data preprocessing...")
     
     # 刺激編碼映射表 / Stimulus encoding mapping
-    # 目的：將1-4的刺激編號轉換為左右線條傾斜特徵
-    # Purpose: Convert stimulus numbers 1-4 to left/right line tilt features
+    # 目的：將0-3的刺激編號轉換為左右線條傾斜特徵
+    # Purpose: Convert stimulus numbers 0-3 to left/right line tilt features
     stimulus_mapping = {
-        1: {'left_tilt': 0, 'right_tilt': 1, 'description': '左\\右|'},  # 左斜右直
-        2: {'left_tilt': 0, 'right_tilt': 0, 'description': '左\\右/'},  # 左斜右斜  
-        3: {'left_tilt': 1, 'right_tilt': 1, 'description': '左|右|'},  # 左直右直
-        4: {'left_tilt': 1, 'right_tilt': 0, 'description': '左|右/'}   # 左直右斜
+        0: {'left_tilt': 0, 'right_tilt': 1, 'description': '左\\右|'},  # 左斜右直
+        1: {'left_tilt': 0, 'right_tilt': 0, 'description': '左\\右/'},  # 左斜右斜  
+        2: {'left_tilt': 1, 'right_tilt': 1, 'description': '左|右|'},  # 左直右直
+        3: {'left_tilt': 1, 'right_tilt': 0, 'description': '左|右/'}   # 左直右斜
     }
     
     # 創建新的特徵欄位 / Create new feature columns
@@ -97,7 +97,7 @@ def prepare_line_tilt_data(df: pd.DataFrame) -> pd.DataFrame:
     # Source: RT column from CSV file
     # 範圍：0.1-10秒，移除過快或過慢的反應
     # Range: 0.1-10 seconds, remove too fast or too slow responses
-    valid_rt = (df['RT'] >= 0.1) & (df['RT'] <= 10.0)
+    valid_rt = (df['RT'] >= 0.1) & (df['RT'] <= 3)
     
     # 選擇有效性過濾 / Choice validity filtering
     # 目的：確保選擇在有效範圍內
@@ -161,10 +161,10 @@ def compute_dual_lba_likelihood(left_tilt, right_tilt, choice, rt,
     # LBA模型固定參數 / Fixed LBA parameters
     # 目的：設定LBA模型的基本結構參數
     # Purpose: Set basic structural parameters for LBA model
-    A = 0.4      # 起始點變異 / Start point variability
-    s = 0.3      # 漂移率標準差 / Drift rate standard deviation
-    t0 = 0.2     # 非決策時間 / Non-decision time
-    b = A + 0.6  # 決策閾值 / Decision threshold
+    A = 0.35      # 起始點變異 / Start point variability
+    s = 0.25      # 漂移率標準差 / Drift rate standard deviation
+    t0 = 0.4     # 非決策時間 / Non-decision time
+    b = A + 0.4  # 決策閾值 / Decision threshold
     
     # 計算決策時間 / Calculate decision time
     # 目的：從總反應時間中減去非決策時間
@@ -560,7 +560,7 @@ class LineTiltGRTAnalyzer:
         print(f"  準確率 / Accuracy: {self.df['Correct'].mean():.3f}")
         
         print("\n刺激分佈 / Stimulus Distribution:")
-        for stim in [1, 2, 3, 4]:
+        for stim in [0, 1, 2, 3]:
             count = len(self.df[self.df['Stimulus'] == stim])
             pct = count / len(self.df) * 100
             print(f"  刺激{stim}: {count} trials ({pct:.1f}%)")
