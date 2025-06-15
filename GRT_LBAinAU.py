@@ -1,27 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Individual Subject GRT-LBA Model Analysis
+Individual Subject GRT-LBA Model Analysis - FIXED VERSION
 Each subject gets their own Bayesian LBA analysis, then results are integrated
 Includes sigma matrix analysis for each individual and combined results
 
-GRT-LBA Parameters:
-===================
-GRT (General Recognition Theory) Parameters:
-- db1, db2: Decision boundaries in 2D perceptual space (transformed from logit space)
-- sp1, sp2: Perceptual variabilities (noise) in each dimension (exp-transformed from log space)
-
-LBA (Linear Ballistic Accumulator) Parameters:
-- A: Start point variability (uniform distribution width, exp-transformed from log space)
-- b1, b2: Decision thresholds for each accumulator (A + bMa, where bMa is exp-transformed)
-- s: Drift rate variability (fixed at 1.0 in standard LBA, here exp-transformed for flexibility)
-- t0: Non-decision time (encoding + motor response, exp-transformed from log space)
-- v1, v2: Drift rates (computed from GRT parameters via grt_dbt transformation)
-
-Parameter Transformations:
-==========================
-- Logit space → Real space: sigmoid(x) for bounded parameters (0,1)
-- Log space → Real space: exp(x) for positive parameters
-- Raw → Hierarchical: mu + sigma * raw for group-level modeling
+MAIN FIX: Vectorized LBA likelihood function to avoid tensor-to-int conversion issues
 """
 
 import numpy as np
@@ -61,12 +44,6 @@ def grt_dbt(stimloc, db, sp, coactive=False):
     --------
     p : array, shape (n_items,)
         Drift rate probabilities for accumulator A
-        
-    Computational Details:
-    ----------------------
-    - Standardizes stimulus-to-boundary distance: z = (boundary - stimulus) / variability
-    - Converts to probability via cumulative normal: P = Φ(z)
-    - Clips extreme values to avoid numerical issues in LBA likelihood
     """
     stimloc = np.atleast_2d(stimloc)
     db = np.atleast_1d(db)
@@ -103,59 +80,14 @@ def grt_dbt(stimloc, db, sp, coactive=False):
     return p_result
 
 def logit_transform(x, inverse=False):
-    """
-    Logit transformation function
-    
-    Purpose:
-        Transform parameters between bounded (0,1) and unbounded (-∞,∞) space
-        
-    Parameters:
-    -----------
-    x : float or array
-        Values to transform
-    inverse : bool
-        If True, apply inverse logit (sigmoid), else apply logit
-        
-    Returns:
-    --------
-    transformed values
-    
-    Mathematical Details:
-    ---------------------
-    - logit: maps (0,1) to (-∞,∞) via log(x/(1-x))
-    - inverse logit: maps (-∞,∞) to (0,1) via 1/(1+exp(-x))
-    """
+    """Logit transformation function"""
     if inverse:
         return expit(x)  # 1 / (1 + exp(-x))
     else:
         return logit(x)   # log(x / (1-x))
 
 def transform_boundaries(db_logit, stimloc):
-    """
-    Transform logit-space boundaries back to real coordinates
-    
-    Purpose:
-        Convert decision boundary parameters from unconstrained logit space
-        back to the coordinate system defined by stimulus locations
-        
-    Parameters:
-    -----------
-    db_logit : array, shape (2,)
-        Decision boundaries in logit space (unconstrained)
-    stimloc : array, shape (n_items, 2)
-        Stimulus location coordinates (defines coordinate bounds)
-        
-    Returns:
-    --------
-    db_real : array, shape (2,)
-        Decision boundaries in real coordinate space
-        
-    Computational Process:
-    ----------------------
-    1. Apply sigmoid to map logit space to (0,1)
-    2. Scale to stimulus coordinate range: sigmoid(x) * (max-min) + min
-    3. Results in boundaries constrained within stimulus space
-    """
+    """Transform logit-space boundaries back to real coordinates"""
     min_x, max_x = stimloc[:, 0].min(), stimloc[:, 0].max()
     min_y, max_y = stimloc[:, 1].min(), stimloc[:, 1].max()
     
@@ -167,10 +99,13 @@ def transform_boundaries(db_logit, stimloc):
     
     return np.array([db1_real, db2_real])
 
-def stable_lba_loglik_single_subject(rt_data, choice_data, stimloc, 
-                                   db1, db2, sp1, sp2, A, b1, b2, s, t0):
+def vectorized_lba_loglik_single_subject(rt_data, choice_data, stimloc, 
+                                        db1, db2, sp1, sp2, A, b1, b2, s, t0):
     """
-    Stable LBA log-likelihood for single subject with GRT drift rate conversion
+    FIXED: Vectorized LBA log-likelihood for single subject with GRT drift rate conversion
+    
+    This version uses vectorized operations instead of explicit loops to avoid
+    the tensor-to-int conversion issue.
     
     Purpose:
         Calculate log-likelihood for LBA model where drift rates are derived
@@ -201,18 +136,6 @@ def stable_lba_loglik_single_subject(rt_data, choice_data, stimloc,
     --------
     total_loglik : tensor (scalar)
         Total log-likelihood across all trials
-        
-    LBA Likelihood Components:
-    -------------------------
-    1. Winner PDF: Probability density that winning accumulator finishes at observed RT
-    2. Loser Survival: Probability that losing accumulator hasn't finished yet
-    3. Total likelihood = Winner PDF × Loser Survival
-    
-    GRT-to-LBA Conversion:
-    ----------------------
-    1. For each trial, compute distance from stimulus to decision boundaries
-    2. Convert distances to probabilities via sigmoid transformation
-    3. Use probabilities as LBA drift rates (evidence accumulation rates)
     """
     # Ensure minimum parameter values for numerical stability
     A = pt.maximum(A, 0.05)
@@ -226,111 +149,72 @@ def stable_lba_loglik_single_subject(rt_data, choice_data, stimloc,
     # Decision time (remove non-decision time from RT)
     rt_decision = pt.maximum(rt_data - t0, 0.01)
     
-    # Get number of trials (convert tensor to Python int for range)
-    n_trials = int(rt_data.shape[0])
+    # Convert GRT parameters to LBA drift rates for all trials (VECTORIZED)
+    # v1_prob: probability that evidence favors accumulator 1
+    v1_prob = pt.sigmoid((db1 - stimloc[:, 0]) / sp1)
+    v2_prob = pt.sigmoid((db2 - stimloc[:, 1]) / sp2)
     
-    total_loglik = 0.0
+    # Combine probabilities for drift rates
+    v1 = v1_prob * v2_prob  # Probability for accumulator 1
+    v2 = 1 - v1             # Probability for accumulator 2
     
-    # Process each trial individually
-    for i in range(n_trials):
-        choice_i = choice_data[i]
-        rt_i = rt_decision[i]
-        
-        # Convert GRT parameters to LBA drift rates for this trial
-        # v1_prob: probability that evidence favors accumulator 1
-        v1_prob = pt.sigmoid((db1 - stimloc[i, 0]) / sp1)
-        v2_prob = pt.sigmoid((db2 - stimloc[i, 1]) / sp2)
-        
-        # Combine probabilities for drift rates
-        # This is a simplified combination - could be more sophisticated
-        v1 = v1_prob * v2_prob  # Probability for accumulator 1
-        v2 = 1 - v1             # Probability for accumulator 2
-        
-        # Ensure minimum drift rates for numerical stability
-        v1 = pt.maximum(v1, 0.1)
-        v2 = pt.maximum(v2, 0.1)
-        
-        # Select parameters for winning and losing accumulators based on choice
-        v_winner = pt.switch(pt.eq(choice_i, 0), v1, v2)
-        v_loser = pt.switch(pt.eq(choice_i, 0), v2, v1)
-        b_winner = pt.switch(pt.eq(choice_i, 0), b1, b2)
-        b_loser = pt.switch(pt.eq(choice_i, 0), b2, b1)
-        
-        # LBA likelihood calculation
-        rt_i = pt.maximum(rt_i, 0.01)
-        sqrt_t = pt.sqrt(rt_i)
-        
-        # Winner PDF calculation
-        # z-scores for normal CDF/PDF calculations
-        z1_win = (v_winner * rt_i - b_winner) / sqrt_t
-        z2_win = (v_winner * rt_i - A) / sqrt_t
-        z1_win = pt.clip(z1_win, -10, 10)  # Prevent overflow
-        z2_win = pt.clip(z2_win, -10, 10)
-        
-        # Normal CDF and PDF values
-        Phi_z1_win = 0.5 * (1 + pt.erf(z1_win / pt.sqrt(2)))
-        Phi_z2_win = 0.5 * (1 + pt.erf(z2_win / pt.sqrt(2)))
-        phi_z1_win = pt.exp(-0.5 * z1_win**2) / pt.sqrt(2 * np.pi)
-        phi_z2_win = pt.exp(-0.5 * z2_win**2) / pt.sqrt(2 * np.pi)
-        
-        # LBA winner PDF components
-        cdf_diff = pt.maximum(Phi_z1_win - Phi_z2_win, 1e-12)
-        pdf_diff = (phi_z1_win - phi_z2_win) / sqrt_t
-        
-        winner_pdf = (v_winner / A) * cdf_diff + pdf_diff / A
-        winner_pdf = pt.maximum(winner_pdf, 1e-12)
-        winner_logpdf = pt.log(winner_pdf)
-        
-        # Loser survival function (probability of not finishing by time rt_i)
-        z1_lose = (v_loser * rt_i - b_loser) / sqrt_t
-        z2_lose = (v_loser * rt_i - A) / sqrt_t
-        z1_lose = pt.clip(z1_lose, -10, 10)
-        z2_lose = pt.clip(z2_lose, -10, 10)
-        
-        Phi_z1_lose = 0.5 * (1 + pt.erf(z1_lose / pt.sqrt(2)))
-        Phi_z2_lose = 0.5 * (1 + pt.erf(z2_lose / pt.sqrt(2)))
-        
-        loser_cdf = pt.maximum(Phi_z1_lose - Phi_z2_lose, 1e-12)
-        loser_survival = pt.maximum(1 - loser_cdf, 1e-12)
-        loser_log_survival = pt.log(loser_survival)
-        
-        # Combine winner PDF and loser survival
-        trial_loglik = winner_logpdf + loser_log_survival
-        total_loglik += trial_loglik
+    # Ensure minimum drift rates for numerical stability
+    v1 = pt.maximum(v1, 0.1)
+    v2 = pt.maximum(v2, 0.1)
+    
+    # Select parameters for winning and losing accumulators based on choice (VECTORIZED)
+    v_winner = pt.where(pt.eq(choice_data, 0), v1, v2)
+    v_loser = pt.where(pt.eq(choice_data, 0), v2, v1)
+    b_winner = pt.where(pt.eq(choice_data, 0), b1, b2)
+    b_loser = pt.where(pt.eq(choice_data, 0), b2, b1)
+    
+    # LBA likelihood calculation (VECTORIZED)
+    rt_decision = pt.maximum(rt_decision, 0.01)
+    sqrt_t = pt.sqrt(rt_decision)
+    
+    # Winner PDF calculation
+    z1_win = (v_winner * rt_decision - b_winner) / sqrt_t
+    z2_win = (v_winner * rt_decision - A) / sqrt_t
+    z1_win = pt.clip(z1_win, -10, 10)  # Prevent overflow
+    z2_win = pt.clip(z2_win, -10, 10)
+    
+    # Normal CDF and PDF values
+    Phi_z1_win = 0.5 * (1 + pt.erf(z1_win / pt.sqrt(2)))
+    Phi_z2_win = 0.5 * (1 + pt.erf(z2_win / pt.sqrt(2)))
+    phi_z1_win = pt.exp(-0.5 * z1_win**2) / pt.sqrt(2 * np.pi)
+    phi_z2_win = pt.exp(-0.5 * z2_win**2) / pt.sqrt(2 * np.pi)
+    
+    # LBA winner PDF components
+    cdf_diff = pt.maximum(Phi_z1_win - Phi_z2_win, 1e-12)
+    pdf_diff = (phi_z1_win - phi_z2_win) / sqrt_t
+    
+    winner_pdf = (v_winner / A) * cdf_diff + pdf_diff / A
+    winner_pdf = pt.maximum(winner_pdf, 1e-12)
+    winner_logpdf = pt.log(winner_pdf)
+    
+    # Loser survival function (probability of not finishing by time rt_decision)
+    z1_lose = (v_loser * rt_decision - b_loser) / sqrt_t
+    z2_lose = (v_loser * rt_decision - A) / sqrt_t
+    z1_lose = pt.clip(z1_lose, -10, 10)
+    z2_lose = pt.clip(z2_lose, -10, 10)
+    
+    Phi_z1_lose = 0.5 * (1 + pt.erf(z1_lose / pt.sqrt(2)))
+    Phi_z2_lose = 0.5 * (1 + pt.erf(z2_lose / pt.sqrt(2)))
+    
+    loser_cdf = pt.maximum(Phi_z1_lose - Phi_z2_lose, 1e-12)
+    loser_survival = pt.maximum(1 - loser_cdf, 1e-12)
+    loser_log_survival = pt.log(loser_survival)
+    
+    # Combine winner PDF and loser survival for all trials
+    trial_loglik = winner_logpdf + loser_log_survival
+    
+    # Sum across all trials (this is the key - no explicit loop needed)
+    total_loglik = pt.sum(trial_loglik)
     
     return total_loglik
 
 def compute_sigma_matrix(trace, param_names=['db1', 'db2', 'sp1', 'sp2']):
-    """
-    Compute the sigma matrix (covariance matrix) from MCMC samples
-    
-    Purpose:
-        Calculate parameter covariance matrix to assess independence assumptions
-        in GRT. High correlations suggest violations of independence.
-        
-    Parameters:
-    -----------
-    trace : InferenceData
-        MCMC trace from PyMC sampling
-    param_names : list
-        Parameter names to include in sigma matrix
-        
-    Returns:
-    --------
-    sigma_matrix : array
-        Covariance matrix of parameters (measures linear dependencies)
-    correlation_matrix : array
-        Correlation matrix of parameters (standardized covariances)
-    available_params : list
-        Parameters that were actually found in the trace
-        
-    Interpretation:
-    ---------------
-    - Diagonal elements: parameter variances (uncertainty in estimates)
-    - Off-diagonal elements: covariances (linear dependencies between parameters)
-    - Correlation values close to 0: suggests parameter independence
-    - High correlations (|r| > 0.3): suggests possible violations of GRT assumptions
-    """
+    """Compute the sigma matrix (covariance matrix) from MCMC samples"""
     posterior = trace.posterior
     
     # Extract parameter samples
@@ -356,33 +240,10 @@ def compute_sigma_matrix(trace, param_names=['db1', 'db2', 'sp1', 'sp2']):
     return sigma_matrix, correlation_matrix, available_params
 
 class IndividualSubjectGRTLBA:
-    """
-    Individual Subject GRT-LBA Analysis
-    
-    Purpose:
-        Test GRT assumptions using LBA framework with individual subject analysis.
-        Each subject gets separate Bayesian analysis, then results are integrated
-        to assess group-level GRT assumption violations.
-        
-    Workflow:
-    ---------
-    1. Load and prepare data for each subject
-    2. Build individual GRT-LBA models with parameter transformations
-    3. Run MCMC sampling for each subject separately
-    4. Compute sigma matrices and independence tests per subject
-    5. Integrate results across subjects for group-level conclusions
-    6. Test separability and independence assumptions at group level
-    """
+    """Individual Subject GRT-LBA Analysis with FIXED likelihood function"""
     
     def __init__(self, csv_file='GRT_LBA.csv'):
-        """
-        Initialize with data loading
-        
-        Parameters:
-        -----------
-        csv_file : str
-            Path to CSV file containing RT, choice, participant, and stimulus data
-        """
+        """Initialize with data loading"""
         self.csv_file = csv_file
         self.results_dir = Path('individual_results')
         self.results_dir.mkdir(exist_ok=True)
@@ -394,17 +255,7 @@ class IndividualSubjectGRTLBA:
         self.combined_results = {}
     
     def load_and_prepare_data(self):
-        """
-        Load and prepare data for individual subject analysis
-        
-        Data Processing Steps:
-        ----------------------
-        1. Load CSV with RT, Response, participant, Stimulus columns
-        2. Filter extreme RTs (0.15-2.0 seconds) to remove outliers
-        3. Convert Response to binary choice (0/1)
-        4. Create 2D stimulus locations based on Stimulus numbers
-        5. Map participants to consecutive indices for modeling
-        """
+        """Load and prepare data for individual subject analysis"""
         print("Loading data for individual subject GRT-LBA analysis...")
         
         df = pd.read_csv(self.csv_file)
@@ -418,7 +269,6 @@ class IndividualSubjectGRTLBA:
         df['choice_binary'] = (df['Response'] >= 2).astype(int)
         
         # Create stimulus locations based on Stimulus column
-        # This creates a 2D perceptual space for GRT analysis
         if 'Stimulus' in df.columns:
             unique_stimuli = sorted(df['Stimulus'].unique())
             n_stim = len(unique_stimuli)
@@ -468,40 +318,7 @@ class IndividualSubjectGRTLBA:
                   f"choice dist: {p_data['choice_binary'].value_counts().to_dict()}")
     
     def build_single_subject_model(self, subject_data, subject_id):
-        """
-        Build GRT-LBA model for single subject
-        
-        Parameters:
-        -----------
-        subject_data : DataFrame
-            Data for single subject
-        subject_id : int
-            Subject identifier
-            
-        Returns:
-        --------
-        model : PyMC Model
-            Compiled model for this subject
-            
-        Model Structure:
-        ----------------
-        Priors (in transformed space for unconstrained sampling):
-        - db1_logit, db2_logit: Decision boundaries (logit space → sigmoid → real coordinates)
-        - sp1_log, sp2_log: Perceptual variabilities (log space → exp → positive reals)
-        - A_log: Start point variability (log space → exp → positive real)
-        - bMa1_log, bMa2_log: Threshold differences (log space → exp → positive real)
-        - s_log: Drift variability (log space → exp → positive real)  
-        - t0_log: Non-decision time (log space → exp → positive real)
-        
-        Deterministic Transformations:
-        - Real-space parameters computed from transformed priors
-        - Decision boundaries mapped to stimulus coordinate system
-        - Thresholds computed as A + bMa (ensuring threshold > start point)
-        
-        Likelihood:
-        - LBA likelihood with GRT-derived drift rates
-        - Each trial: convert stimulus location + boundaries → drift rates → LBA likelihood
-        """
+        """Build GRT-LBA model for single subject with FIXED likelihood"""
         # Prepare data arrays
         rt_obs = subject_data['RT'].values.astype(np.float32)
         choice_obs = subject_data['choice_binary'].values.astype(np.int32)
@@ -514,31 +331,21 @@ class IndividualSubjectGRTLBA:
         
         with pm.Model() as model:
             # Decision boundary parameters (in logit space for unconstrained sampling)
-            # These will be transformed to real coordinates within stimulus bounds
             db1_logit = pm.Normal('db1_logit', mu=0, sigma=0.5)
             db2_logit = pm.Normal('db2_logit', mu=0, sigma=0.5)
             
             # Perceptual variability parameters (in log space for positive constraint)
-            # Prior centered around 0.2 units of perceptual noise
             sp1_log = pm.Normal('sp1_log', mu=np.log(0.2), sigma=0.3)
             sp2_log = pm.Normal('sp2_log', mu=np.log(0.2), sigma=0.3)
             
             # LBA parameters (all in log space for positive constraint)
-            # A: Start point variability (typical range 0.1-0.5)
             A_log = pm.Normal('A_log', mu=np.log(0.35), sigma=0.3)
-            
-            # bMa: Threshold minus A (typical range 0.1-0.5)
             bMa1_log = pm.Normal('bMa1_log', mu=np.log(0.25), sigma=0.5)
             bMa2_log = pm.Normal('bMa2_log', mu=np.log(0.25), sigma=0.5)
-            
-            # s: Drift rate variability (typically fixed at 1.0, here flexible)
             s_log = pm.Normal('s_log', mu=np.log(0.25), sigma=0.3)
-            
-            # t0: Non-decision time (typical range 0.1-0.4 seconds)
             t0_log = pm.Normal('t0_log', mu=np.log(0.22), sigma=0.3)
             
             # Transform to interpretable parameter space
-            # Exponential transformation for positive parameters
             sp1 = pm.Deterministic('sp1', pm.math.exp(sp1_log))
             sp2 = pm.Deterministic('sp2', pm.math.exp(sp2_log))
             A = pm.Deterministic('A', pm.math.exp(A_log))
@@ -546,7 +353,6 @@ class IndividualSubjectGRTLBA:
             t0 = pm.Deterministic('t0', pm.math.exp(t0_log))
             
             # Transform boundaries to real coordinate space
-            # Map from logit space to stimulus coordinate bounds
             stimloc_tensor = pt.as_tensor(self.stimloc, dtype='float32')
             min_x = pt.min(stimloc_tensor[:, 0])
             max_x = pt.max(stimloc_tensor[:, 0])
@@ -562,13 +368,12 @@ class IndividualSubjectGRTLBA:
             # Transform thresholds (must exceed start point variability)
             bMa1 = pm.Deterministic('bMa1', pm.math.exp(bMa1_log))
             bMa2 = pm.Deterministic('bMa2', pm.math.exp(bMa2_log))
-            b1 = pm.Deterministic('b1', A + bMa1)  # Threshold = start point + difference
+            b1 = pm.Deterministic('b1', A + bMa1)
             b2 = pm.Deterministic('b2', A + bMa2)
             
-            # LBA likelihood with GRT conversion
-            # This connects GRT perceptual model to LBA decision process
+            # FIXED: Use vectorized LBA likelihood with GRT conversion
             pm.Potential('lba_grt_likelihood',
-                        stable_lba_loglik_single_subject(
+                        vectorized_lba_loglik_single_subject(
                             pt.as_tensor(rt_obs),
                             pt.as_tensor(choice_obs),
                             pt.as_tensor(stimloc_obs),
@@ -577,32 +382,7 @@ class IndividualSubjectGRTLBA:
         return model
     
     def analyze_single_subject(self, subject_id, draws=400, tune=200, chains=2):
-        """
-        Analyze single subject with Bayesian GRT-LBA
-        
-        Parameters:
-        -----------
-        subject_id : int
-            Subject identifier
-        draws : int
-            Number of MCMC draws (post-warmup samples)
-        tune : int
-            Number of tuning steps (warmup for adaptation)
-        chains : int
-            Number of parallel chains (for convergence assessment)
-            
-        Returns:
-        --------
-        trace : InferenceData
-            MCMC trace containing posterior samples
-            
-        MCMC Settings:
-        --------------
-        - target_accept=0.9: High acceptance rate for reliable sampling
-        - max_treedepth=10: Prevents excessive trajectory length
-        - cores=1: Sequential processing (modify for parallel if needed)
-        - Random seed: Subject-specific for reproducibility
-        """
+        """Analyze single subject with Bayesian GRT-LBA"""
         print(f"\n{'='*50}")
         print(f"ANALYZING SUBJECT {subject_id}")
         print(f"{'='*50}")
@@ -643,24 +423,12 @@ class IndividualSubjectGRTLBA:
             
         except Exception as e:
             print(f"  ✗ Sampling failed for subject {subject_id}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def analyze_subject_results(self, trace, subject_id):
-        """
-        Analyze results for individual subject
-        
-        Purpose:
-            Extract parameter estimates, compute sigma matrix, and test GRT assumptions
-            for a single subject
-            
-        Analysis Components:
-        --------------------
-        1. Parameter Estimates: Mean, SD, HDI for all model parameters
-        2. Sigma Matrix: Covariance and correlation matrices for independence testing
-        3. Separability Test: sp1/sp2 ratio analysis
-        4. Independence Tests: Pairwise correlation analysis
-        5. Model Diagnostics: ESS, R-hat for convergence assessment
-        """
+        """Analyze results for individual subject"""
         print(f"  Analyzing results for subject {subject_id}...")
         
         posterior = trace.posterior
@@ -737,31 +505,7 @@ class IndividualSubjectGRTLBA:
         return results
     
     def test_independence(self, correlation_matrix, param_names):
-        """
-        Test parameter independence using correlation matrix
-        
-        Purpose:
-            Assess GRT independence assumptions by examining parameter correlations.
-            High correlations suggest violations of dimensional independence.
-            
-        Parameters:
-        -----------
-        correlation_matrix : array
-            Correlation matrix of parameters
-        param_names : list
-            Names of parameters in correlation matrix
-            
-        Returns:
-        --------
-        independence_tests : dict
-            Results of pairwise independence tests
-            
-        Independence Criteria:
-        ----------------------
-        - |correlation| < 0.3: Independent (weak correlation)
-        - 0.3 ≤ |correlation| < 0.6: Moderate dependence
-        - |correlation| ≥ 0.6: Strong dependence (assumption violation)
-        """
+        """Test parameter independence using correlation matrix"""
         independence_tests = {}
         
         if correlation_matrix is not None and len(param_names) >= 2:
@@ -783,17 +527,7 @@ class IndividualSubjectGRTLBA:
         return independence_tests
     
     def save_individual_results(self, trace, results, subject_id):
-        """
-        Save individual subject results
-        
-        Purpose:
-            Store results and traces for later analysis and combination
-            
-        Files Created:
-        --------------
-        - subject_{ID}_results.json: Parameter estimates and test results
-        - subject_{ID}_trace.pkl: Full MCMC trace for detailed analysis
-        """
+        """Save individual subject results"""
         # Save JSON results
         results_file = self.results_dir / f'subject_{subject_id}_results.json'
         with open(results_file, 'w') as f:
@@ -807,30 +541,7 @@ class IndividualSubjectGRTLBA:
         print(f"  ✓ Results saved for subject {subject_id}")
     
     def analyze_all_subjects(self, max_subjects=None, draws=400, tune=200):
-        """
-        Analyze all subjects individually
-        
-        Purpose:
-            Run complete GRT-LBA analysis for each subject, then combine results
-            for group-level GRT assumption testing
-            
-        Parameters:
-        -----------
-        max_subjects : int, optional
-            Maximum number of subjects to analyze (for testing)
-        draws : int
-            MCMC draws per subject
-        tune : int
-            MCMC tuning steps per subject
-            
-        Process:
-        --------
-        1. Loop through all subjects
-        2. Build and sample individual models
-        3. Extract results and compute sigma matrices
-        4. Track success/failure rates
-        5. Combine results for group analysis
-        """
+        """Analyze all subjects individually"""
         print(f"\n{'='*70}")
         print(f"INDIVIDUAL SUBJECT GRT-LBA ANALYSIS")
         print(f"Total subjects: {self.n_participants}")
@@ -867,21 +578,7 @@ class IndividualSubjectGRTLBA:
             self.combine_results()
     
     def combine_results(self):
-        """
-        Combine individual subject results into group analysis
-        
-        Purpose:
-            Integrate individual results to assess group-level GRT assumptions
-            and provide overall conclusions about independence and separability
-            
-        Combination Process:
-        --------------------
-        1. Aggregate parameter estimates across subjects
-        2. Average sigma matrices for group-level correlation patterns
-        3. Combine independence test results
-        4. Compute group-level separability support
-        5. Generate summary statistics and conclusions
-        """
+        """Combine individual subject results into group analysis"""
         print(f"\n{'='*50}")
         print(f"COMBINING INDIVIDUAL RESULTS")
         print(f"{'='*50}")
@@ -1050,13 +747,7 @@ class IndividualSubjectGRTLBA:
         print(f"✓ Combined results saved to {combined_file}")
     
     def print_combined_summary(self):
-        """
-        Print summary of combined results
-        
-        Purpose:
-            Provide comprehensive overview of group-level GRT assumption testing
-            including parameter estimates, independence tests, and separability analysis
-        """
+        """Print summary of combined results"""
         print(f"\n{'='*60}")
         print(f"COMBINED GROUP ANALYSIS SUMMARY")
         print(f"{'='*60}")
@@ -1155,13 +846,7 @@ class IndividualSubjectGRTLBA:
         return loaded_count
     
     def generate_detailed_report(self):
-        """
-        Generate detailed analysis report
-        
-        Purpose:
-            Create comprehensive report covering individual subject results
-            and group-level GRT assumption testing conclusions
-        """
+        """Generate detailed analysis report"""
         print(f"\n{'='*70}")
         print(f"DETAILED INDIVIDUAL SUBJECT GRT-LBA REPORT")
         print(f"{'='*70}")
@@ -1263,9 +948,6 @@ def run_individual_subject_analysis(max_subjects=None, draws=400, tune=200):
     """
     Main function to run individual subject GRT-LBA analysis
     
-    Purpose:
-        Execute complete pipeline for individual subject GRT assumption testing
-        
     Parameters:
     -----------
     max_subjects : int, optional
@@ -1279,14 +961,6 @@ def run_individual_subject_analysis(max_subjects=None, draws=400, tune=200):
     --------
     analyzer : IndividualSubjectGRTLBA
         Analyzer object with all results
-        
-    Workflow:
-    ---------
-    1. Initialize analyzer and load data
-    2. Check for existing results
-    3. Run individual subject analyses
-    4. Combine results for group-level testing
-    5. Generate detailed report with GRT conclusions
     """
     print("STARTING INDIVIDUAL SUBJECT GRT-LBA ANALYSIS")
     print("Each subject analyzed separately, then results combined")
@@ -1312,7 +986,6 @@ def run_individual_subject_analysis(max_subjects=None, draws=400, tune=200):
             analyzer.individual_traces = {}
         elif choice == '3':
             print("Analyzing missing subjects only...")
-            # This would require additional logic to identify missing subjects
             pass
     
     # Run analysis
@@ -1342,7 +1015,7 @@ def quick_test_analysis():
     return run_individual_subject_analysis(max_subjects=3, draws=200, tune=100)
 
 if __name__ == "__main__":
-    # For quick testing
+    # For quick testing - uncomment to test with small subset
     # analyzer = quick_test_analysis()
     
     # For full analysis
