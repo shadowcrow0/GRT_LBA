@@ -188,3 +188,85 @@ Subject 36's likely responses:
 * Your left brain and right brain see the world slightly differently, creating systematic biases in what you perceive on each side.
 * In your experiment, this shows up as people consistently misidentifying line orientations in predictable, side-specific ways.
 * Most people in your sample (10/18) have this asymmetry – it's actually normal to have somewhat unbalanced bilateral processing!
+* 
+## 🧠 **What This Means in Your Actual Experiment:**
+
+### 🎯 **The Compensatory Strategy in Action:**
+
+**When a participant has "Strong left→diagonal bias + Strong right→vertical bias":**
+
+### 📋 **Concrete Example - Subject's Behavior:**
+
+**What they ACTUALLY see on screen:**
+- Stimulus shows: `| |` (both lines are actually vertical)
+
+**What their brain PERCEIVES:**
+- **Left channel** (biased toward diagonal): "That's a `\` line"
+- **Right channel** (biased toward vertical): "That's a `|` line"  
+- **Combined perception**: "I saw `\ |`"
+
+**What they RESPOND:**
+- Clicks Choice 0: `\ |` (left diagonal, right vertical)
+
+**RESULT:** 
+- **Stimulus was**: `| |` (Choice 2)
+- **They reported**: `\ |` (Choice 0)  
+- **Outcome**: WRONG ANSWER
+
+### 🔄 **The Pattern Across All Stimuli:**
+
+**For this compensatory participant:**
+
+1. **Sees `\ |`** → Reports `\ |` → **CORRECT** (lucky match)
+2. **Sees `\ /`** → Reports `\ |` → **WRONG** (sees right/ as right|)
+3. **Sees `| |`** → Reports `\ |` → **WRONG** (sees left| as left\)
+4. **Sees `| /`** → Reports `\ |` → **WRONG** (sees both wrong)
+
+### 📊 **Their Choice Pattern:**
+- **Choice 0 (`\ |`)**: MASSIVELY OVERUSED (~60-80% of trials)
+- **Choice 1 (`\ /`)**: Underused (~5-15%)  
+- **Choice 2 (`| |`)**: Severely underused (~2-8%)
+- **Choice 3 (`| /`)**: Underused (~10-20%)
+
+### 🎭 **What This Looks Like Behaviorally:**
+
+**The participant literally cannot see certain combinations:**
+- They **almost never report** `| |` (both vertical)
+- They **almost never report** `\ /` (both diagonal)  
+- They get "stuck" reporting `\ |` regardless of what was shown
+
+### 🧠 **Why This Happens - The Compensation:**
+
+**Their brain has learned/developed this strategy:**
+- **Left brain**: "When in doubt, call it diagonal"
+- **Right brain**: "When in doubt, call it vertical" 
+- **Result**: They consistently report the SAME combination
+
+### 🔍 **Real Participant Example (Subject 36):**
+
+**Likely behavior pattern:**
+- Shown 894 different stimuli
+- Reports `\ |` about 350 times (39%)
+- Reports `| /` about 414 times (46%)  
+- Almost never reports `| |` (maybe 45 times, 5%)
+- **Accuracy**: 30.2% (very poor)
+
+### 💡 **Why It's "Compensatory":**
+
+**The biases BALANCE each other:**
+- Left bias toward diagonal (-0.396)
+- Right bias toward diagonal (+0.268)
+- But they compensate in OPPOSITE ways
+- Creates systematic, predictable error patterns
+
+### 🎯 **Observable Behavior Summary:**
+
+**What you'd see watching this participant:**
+1. **Consistent errors**: Same wrong answers repeatedly
+2. **Systematic avoidance**: Never chooses certain combinations  
+3. **Fast responses**: No hesitation (they're confident in wrong answers)
+4. **Predictable patterns**: You could guess their next response
+
+**This isn't random confusion - it's a systematic, organized way of being wrong!**
+
+The sigma matrix revealed that this compensatory strategy is **shared across participants** - many people show similar bilateral coordination patterns, just with different specific biases.
