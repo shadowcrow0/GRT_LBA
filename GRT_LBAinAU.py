@@ -538,6 +538,268 @@ class LineTiltGRTAnalyzer:
         self._show_data_summary()
     
     def _show_data_summary(self):
+        
+        print("\n數據摘要 / Data Summary:")
+        print(f"  總試驗數 / Total trials: {len(self.df)}")
+        print(f"  平均反應時間 / Mean RT: {self.df['RT'].mean():.3f}s")
+        print(f"  準確率 / Accuracy: {self.df['Correct'].mean():.3f}")
+        
+        print("\n刺激分佈 / Stimulus Distribution:")
+        for stim in [1, 2, 3, 4]:
+            count = len(self.df[self.df['Stimulus'] == stim])
+            pct = count / len(self.df) * 100
+            print(f"  刺激{stim}: {count} trials ({pct:.1f}%)")
+        
+        print("\n每位受試者數據量 / Trials per subject:")
+        for subj in self.participants:
+            subj_trials = len(self.df[self.df['participant'] == subj])
+            print(f"  受試者{subj}: {subj_trials} trials")
+    
+    def analyze_all_subjects(self) -> pd.DataFrame:
         """
-        顯示數據摘要統計
-        Show data
+        分析所有受試者
+        Analyze all subjects
+        
+        返回 / Returns:
+        - results_df: 包含所有受試者參數估計的DataFrame
+        - results_df: DataFrame containing parameter estimates for all subjects
+        """
+        
+        print("\n開始批量分析 / Starting batch analysis...")
+        
+        # 儲存結果的列表 / List to store results
+        results_list = []
+        
+        # 逐一分析每位受試者 / Analyze each subject individually
+        for i, subject_id in enumerate(self.participants, 1):
+            print(f"\n[{i}/{len(self.participants)}] 處理受試者 {subject_id} / Processing Subject {subject_id}")
+            
+            # 提取該受試者的數據 / Extract data for this subject
+            subject_data = self.df[self.df['participant'] == subject_id].copy()
+            
+            # 執行分析 / Perform analysis
+            result = analyze_line_tilt_subject(subject_id, subject_data)
+            
+            if result and result.get('success', False):
+                # 成功情況：提取參數估計 / Success case: extract parameter estimates
+                trace = result['trace']
+                
+                # 計算後驗統計 / Calculate posterior statistics
+                posterior_stats = {}
+                
+                # 參數列表 / Parameter list
+                param_names = ['left_bias', 'right_bias', 'left_drift', 'right_drift', 
+                              'noise_left', 'noise_right']
+                
+                for param in param_names:
+                    if param in trace.posterior:
+                        samples = trace.posterior[param].values.flatten()
+                        posterior_stats[f'{param}_mean'] = float(np.mean(samples))
+                        posterior_stats[f'{param}_std'] = float(np.std(samples))
+                        posterior_stats[f'{param}_q025'] = float(np.percentile(samples, 2.5))
+                        posterior_stats[f'{param}_q975'] = float(np.percentile(samples, 97.5))
+                
+                # 組合結果 / Combine results
+                subject_result = {
+                    'subject_id': subject_id,
+                    'success': True,
+                    'n_trials': result['data_info']['n_trials'],
+                    'mean_rt': result['data_info']['mean_rt'],
+                    'rhat_max': result['convergence']['rhat_max'],
+                    'ess_min': result['convergence']['ess_min'],
+                    'converged': result['convergence']['converged'],
+                    **posterior_stats,
+                    **{f"choice_{i}_count": result['data_info']['choice_distribution'][f'choice_{i}'] 
+                       for i in range(4)}
+                }
+                
+            else:
+                # 失敗情況 / Failure case
+                subject_result = {
+                    'subject_id': subject_id,
+                    'success': False,
+                    'error': result.get('error', 'Unknown error') if result else 'Analysis failed',
+                    'n_trials': len(subject_data),
+                    'mean_rt': float(subject_data['RT'].mean()) if len(subject_data) > 0 else np.nan
+                }
+            
+            results_list.append(subject_result)
+        
+        # 轉換為DataFrame / Convert to DataFrame
+        results_df = pd.DataFrame(results_list)
+        
+        # 顯示分析結果摘要 / Show analysis summary
+        self._show_analysis_summary(results_df)
+        
+        return results_df
+    
+    def _show_analysis_summary(self, results_df: pd.DataFrame):
+        """
+        顯示分析結果摘要
+        Show analysis results summary
+        """
+        
+        print("\n" + "="*60)
+        print("分析結果摘要 / Analysis Results Summary")
+        print("="*60)
+        
+        # 成功率統計 / Success rate statistics
+        n_total = len(results_df)
+        n_success = results_df['success'].sum()
+        success_rate = n_success / n_total * 100
+        
+        print(f"總受試者數 / Total subjects: {n_total}")
+        print(f"成功分析數 / Successful analyses: {n_success}")
+        print(f"成功率 / Success rate: {success_rate:.1f}%")
+        
+        if n_success > 0:
+            # 收斂性統計 / Convergence statistics
+            success_df = results_df[results_df['success'] == True]
+            n_converged = success_df['converged'].sum() if 'converged' in success_df else 0
+            
+            print(f"收斂良好 / Well converged: {n_converged}/{n_success}")
+            
+            # 參數統計 / Parameter statistics
+            print("\n參數估計摘要 / Parameter Estimates Summary:")
+            
+            param_base_names = ['left_bias', 'right_bias', 'left_drift', 'right_drift', 
+                               'noise_left', 'noise_right']
+            
+            for param in param_base_names:
+                mean_col = f'{param}_mean'
+                if mean_col in success_df.columns:
+                    values = success_df[mean_col].dropna()
+                    if len(values) > 0:
+                        print(f"  {param}: M = {values.mean():.3f}, SD = {values.std():.3f}, "
+                              f"Range = [{values.min():.3f}, {values.max():.3f}]")
+        
+        # 失敗案例 / Failed cases
+        failed_df = results_df[results_df['success'] == False]
+        if len(failed_df) > 0:
+            print(f"\n失敗案例 / Failed cases: {list(failed_df['subject_id'].values)}")
+    
+    def save_results_to_csv(self, results_df: pd.DataFrame, filename: str = None):
+        """
+        將結果儲存為CSV文件
+        Save results to CSV file
+        
+        參數 / Parameters:
+        - results_df: 分析結果DataFrame / Analysis results DataFrame
+        - filename: 輸出文件名 / Output filename
+        """
+        
+        if filename is None:
+            # 生成時間戳文件名 / Generate timestamped filename
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            filename = f"line_tilt_lba_results_{timestamp}.csv"
+        
+        try:
+            # 儲存主要結果 / Save main results
+            results_df.to_csv(filename, index=False, encoding='utf-8-sig')
+            print(f"✅ 結果已儲存 / Results saved: {filename}")
+            
+            # 創建摘要統計文件 / Create summary statistics file
+            summary_filename = filename.replace('.csv', '_summary.csv')
+            
+            if results_df['success'].sum() > 0:
+                success_df = results_df[results_df['success'] == True]
+                
+                # 計算參數摘要統計 / Calculate parameter summary statistics
+                param_base_names = ['left_bias', 'right_bias', 'left_drift', 'right_drift', 
+                                   'noise_left', 'noise_right']
+                
+                summary_stats = []
+                for param in param_base_names:
+                    mean_col = f'{param}_mean'
+                    std_col = f'{param}_std'
+                    
+                    if mean_col in success_df.columns:
+                        values = success_df[mean_col].dropna()
+                        if len(values) > 0:
+                            summary_stats.append({
+                                'parameter': param,
+                                'n_subjects': len(values),
+                                'grand_mean': values.mean(),
+                                'grand_std': values.std(),
+                                'grand_min': values.min(),
+                                'grand_max': values.max(),
+                                'q25': values.quantile(0.25),
+                                'q50': values.quantile(0.50),
+                                'q75': values.quantile(0.75)
+                            })
+                
+                if summary_stats:
+                    summary_df = pd.DataFrame(summary_stats)
+                    summary_df.to_csv(summary_filename, index=False, encoding='utf-8-sig')
+                    print(f"✅ 摘要統計已儲存 / Summary statistics saved: {summary_filename}")
+            
+            return filename, summary_filename if 'summary_filename' in locals() else None
+            
+        except Exception as e:
+            print(f"❌ 儲存失敗 / Save failed: {e}")
+            return None, None
+
+# ============================================================================
+# 第五部分：主執行程序
+# Part 5: Main Execution Program
+# ============================================================================
+
+def main():
+    """
+    主執行函數
+    Main execution function
+    """
+    
+    start_time = time.time()
+    
+    try:
+        # 創建分析器實例 / Create analyzer instance
+        analyzer = LineTiltGRTAnalyzer('GRT_LBA.csv')
+        
+        # 執行批量分析 / Perform batch analysis
+        results_df = analyzer.analyze_all_subjects()
+        
+        # 儲存結果 / Save results
+        main_file, summary_file = analyzer.save_results_to_csv(results_df)
+        
+        # 計算總執行時間 / Calculate total execution time
+        total_time = time.time() - start_time
+        
+        print("\n" + "="*60)
+        print("分析完成 / Analysis Completed")
+        print("="*60)
+        print(f"⏱️  總執行時間 / Total execution time: {total_time/60:.1f} minutes")
+        
+        if main_file:
+            print(f"📊 主要結果文件 / Main results file: {main_file}")
+        if summary_file:
+            print(f"📈 摘要統計文件 / Summary statistics file: {summary_file}")
+        
+        print("\n結果文件包含以下欄位 / Result files contain the following columns:")
+        print("  - subject_id: 受試者編號 / Subject ID")
+        print("  - success: 分析是否成功 / Analysis success")
+        print("  - n_trials: 試驗數量 / Number of trials")
+        print("  - mean_rt: 平均反應時間 / Mean reaction time")
+        print("  - rhat_max: 最大R-hat值 (收斂指標) / Max R-hat (convergence indicator)")
+        print("  - ess_min: 最小有效樣本數 / Minimum effective sample size")
+        print("  - converged: 是否收斂 / Converged")
+        print("  - [param]_mean: 參數後驗均值 / Parameter posterior mean")
+        print("  - [param]_std: 參數後驗標準差 / Parameter posterior standard deviation")
+        print("  - [param]_q025/q975: 95%信賴區間 / 95% credible interval")
+        print("  - choice_[0-3]_count: 各選項選擇次數 / Choice counts")
+        
+        return results_df
+        
+    except Exception as e:
+        print(f"❌ 程序執行失敗 / Program execution failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+# ============================================================================
+# 程序入口點 / Program Entry Point
+# ============================================================================
+
+if __name__ == "__main__":
+    # 執行主程序 / Execute main program
+    results = main()
