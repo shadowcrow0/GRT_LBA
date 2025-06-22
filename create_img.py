@@ -1,435 +1,597 @@
 # -*- coding: utf-8 -*-
 """
-Linear Ballistic Accumulator (LBA) Model Visualization
-LBA model visualization for four-choice line orientation judgment task
+Revised Sigma Matrix Analysis for LBA Dual-Channel Model
+Focus on core LBA parameters: drift rate (sensitivity) and noise (consistency)
+Excludes confounding variables (speed, bias) to provide pure theoretical test
 """
 
+import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from matplotlib.patches import Rectangle
 import seaborn as sns
+from scipy import stats
+from typing import Dict, List, Tuple
+import arviz as az
 
-# Configure font and style settings
-plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'sans-serif']
-plt.rcParams['axes.unicode_minus'] = False
-sns.set_style("whitegrid", {'grid.alpha': 0.3})
-
-def create_lba_figure():
+def extract_core_channel_parameters(results_df: pd.DataFrame, original_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Creates LBA model figure showing competition process between four accumulators
+    Extract CORE LBA channel parameters for pure theoretical testing
     
-    Purpose: Visualize the classic LBA architecture and dual-channel implementation
-    Implementation: 
-    - Left plot: Classic LBA with 4 competing accumulators
-    - Right plot: Dual-channel architecture specific to this experiment
-    
-    Variables:
-    - A: Start point variability (uniform distribution range)
-    - b: Decision threshold (boundary for decision making)
-    - t0: Non-decision time (encoding + motor response time)
-    - drift_rates: Evidence accumulation rates for each choice
-    - colors: Color scheme for different choices
+    REVISION: Focus only on drift rate (sensitivity) and noise (consistency)
+    EXCLUDED: speed (confounds multiple processing stages) and bias (not core to independence)
     """
     
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+    print("Extracting CORE LBA channel parameters for sigma matrix analysis...")
+    print("FOCUS: Drift rate (sensitivity) and noise (consistency) only")
+    print("EXCLUDED: Speed and bias (theoretical justification provided)")
     
-    # ============================================================================
-    # Left plot: Classic LBA architecture
-    # ============================================================================
+    channel_data = []
     
-    # LBA parameter settings
-    A = 0.35      # Start point variability
-    b = 0.75      # Decision threshold
-    t0 = 0.3      # Non-decision time
-    max_time = 2.0  # Maximum simulation time
+    for _, row in results_df.iterrows():
+        if row['success']:
+            subject_id = row['subject_id']
+            subject_data = original_df[original_df['participant'] == subject_id]
+            
+            if len(subject_data) > 0:
+                # Extract behavioral measures as proxies for CORE LBA parameters only
+                choice_data = subject_data['Response'].values
+                rt_data = subject_data['RT'].values
+                stimulus_data = subject_data['Stimulus'].values
+                
+                # Calculate CORE channel-specific measures only
+                left_measures = calculate_core_left_channel_measures(choice_data, rt_data, stimulus_data)
+                right_measures = calculate_core_right_channel_measures(choice_data, rt_data, stimulus_data)
+                
+                channel_data.append({
+                    'subject_id': subject_id,
+                    # CORE LBA parameters only
+                    'left_sensitivity': left_measures['sensitivity'],     # Drift rate proxy
+                    'left_consistency': left_measures['consistency'],     # Inverse noise proxy
+                    'right_sensitivity': right_measures['sensitivity'],   # Drift rate proxy
+                    'right_consistency': right_measures['consistency'],   # Inverse noise proxy
+                    # Keep accuracy for validation
+                    'accuracy': subject_data['Correct'].mean()
+                })
     
-    # Drift rates for four accumulators (based on experimental data)
-    drift_rates = {
-        'Choice 0 (\\|)': 2.1,   # Adjusted based on average usage rate
-        'Choice 1 (\\/)': 2.4,   # Most frequently used, higher drift rate
-        'Choice 2 (||)': 1.2,    # Least used, lower drift rate
-        'Choice 3 (|/)': 2.6     # Second most used, highest drift rate
+    print(f"Extracted core parameters for {len(channel_data)} subjects")
+    return pd.DataFrame(channel_data)
+
+def calculate_core_left_channel_measures(choices, rts, stimuli):
+    """
+    Calculate CORE left channel measures: sensitivity (drift rate) and consistency (inverse noise)
+    
+    THEORETICAL FOCUS:
+    - Sensitivity: Evidence accumulation efficiency (pure LBA drift rate)
+    - Consistency: Response stability (inverse of LBA noise parameter)
+    
+    EXCLUDED:
+    - Speed: Confounds non-decision time, accumulation, and motor response
+    - Bias: Not central to channel independence theory
+    """
+    
+    # Left channel processing (choices 0,1 have left\, choices 2,3 have left|)
+    left_diagonal_trials = np.isin(stimuli, [0, 1])  # Stimuli with left\ 
+    left_vertical_trials = np.isin(stimuli, [2, 3])   # Stimuli with left|
+    
+    # Left channel responses (choices 0,1 indicate left\ perceived)
+    left_diagonal_responses = np.isin(choices, [0, 1])
+    
+    # CORE PARAMETER 1: Sensitivity (Drift Rate)
+    # Measures evidence accumulation efficiency - central to LBA theory
+    left_diag_correct = np.mean(left_diagonal_responses[left_diagonal_trials]) if np.sum(left_diagonal_trials) > 0 else 0.5
+    left_vert_correct = np.mean(~left_diagonal_responses[left_vertical_trials]) if np.sum(left_vertical_trials) > 0 else 0.5
+    sensitivity = (left_diag_correct + left_vert_correct) / 2
+    
+    # CORE PARAMETER 2: Consistency (Inverse Noise)
+    # Measures accumulation process stability - central to LBA theory
+    response_entropy = -np.sum([p * np.log(p + 1e-10) for p in [np.mean(left_diagonal_responses), 1 - np.mean(left_diagonal_responses)]])
+    consistency = 1 - (response_entropy / np.log(2))  # Normalized inverse entropy
+    
+    return {
+        'sensitivity': sensitivity,   # Pure drift rate measure
+        'consistency': consistency    # Pure inverse noise measure
     }
-    
-    colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4']  # Color palette for choices
-    choice_labels = list(drift_rates.keys())
-    
-    # Draw accumulator trajectories
-    time_points = np.linspace(t0, max_time, 1000)  # Time vector for simulation
-    
-    for i, (choice, drift) in enumerate(drift_rates.items()):
-        # Start point (with random variability)
-        start_point = np.random.uniform(0, A)
-        
-        # Accumulation trajectory (linear + noise)
-        noise = np.random.normal(0, 0.1, len(time_points))  # Gaussian noise
-        accumulation = start_point + drift * (time_points - t0) + np.cumsum(noise) * 0.05
-        
-        # Plot trajectory
-        ax1.plot(time_points, accumulation, color=colors[i], linewidth=3, 
-                label=choice, alpha=0.8)
-        
-        # Mark start point region
-        if i == 0:
-            ax1.axhspan(0, A, alpha=0.3, color='gray', 
-                       label=f'Start Point Variability (A = {A})')
-    
-    # Add decision threshold line
-    ax1.axhline(y=b, color='red', linestyle='--', linewidth=2, 
-               label=f'Decision Threshold (b = {b})')
-    
-    # Add non-decision time line
-    ax1.axvline(x=t0, color='orange', linestyle=':', linewidth=2,
-               label=f'Non-decision Time (t₀ = {t0}s)')
-    
-    # Set plot properties
-    ax1.set_xlabel('Accumulation Time (seconds)', fontsize=12, fontweight='bold')
-    ax1.set_ylabel('Evidence Accumulation', fontsize=12, fontweight='bold')
-    ax1.set_title('LBA Model: Four-Choice Line Orientation Judgment\n(Parameters Based on Experimental Data)', 
-                 fontsize=14, fontweight='bold')
-    ax1.legend(loc='upper left', fontsize=10)
-    ax1.grid(True, alpha=0.3)
-    ax1.set_xlim(0, max_time)
-    ax1.set_ylim(-0.1, 1.2)
-    
-    # Add winner annotation
-    winner_time = 1.1
-    winner_choice = 3  # Choice 3 wins
-    ax1.annotate('Winner!', xy=(winner_time, b), xytext=(winner_time+0.2, b+0.2),
-                arrowprops=dict(arrowstyle='->', color=colors[winner_choice], lw=2),
-                fontsize=12, fontweight='bold', color=colors[winner_choice])
-    
-    # ============================================================================
-    # Right plot: Dual-channel LBA architecture (your model)
-    # ============================================================================
-    
-    # Draw dual-channel architecture
-    ax2.set_xlim(0, 10)
-    ax2.set_ylim(0, 10)
-    
-    # Left channel
-    left_rect = Rectangle((1, 6), 3, 2.5, linewidth=2, edgecolor='blue', 
-                         facecolor='lightblue', alpha=0.7)
-    ax2.add_patch(left_rect)
-    ax2.text(2.5, 7.2, 'Left Channel', ha='center', va='center', 
-            fontsize=11, fontweight='bold')
-    ax2.text(2.5, 6.5, 'left_bias\nleft_drift\nnoise_left', ha='center', va='center', 
-            fontsize=9)
-    
-    # Right channel
-    right_rect = Rectangle((6, 6), 3, 2.5, linewidth=2, edgecolor='green', 
-                          facecolor='lightgreen', alpha=0.7)
-    ax2.add_patch(right_rect)
-    ax2.text(7.5, 7.2, 'Right Channel', ha='center', va='center', 
-            fontsize=11, fontweight='bold')
-    ax2.text(7.5, 6.5, 'right_bias\nright_drift\nnoise_right', ha='center', va='center', 
-            fontsize=9)
-    
-    # Stimulus input
-    stimulus_rect = Rectangle((4, 8.5), 2, 1, linewidth=2, edgecolor='purple', 
-                             facecolor='lavender', alpha=0.7)
-    ax2.add_patch(stimulus_rect)
-    ax2.text(5, 9, 'Visual Stimulus\n(\\|, \\/, ||, |/)', ha='center', va='center', 
-            fontsize=10, fontweight='bold')
-    
-    # Decision integration
-    decision_rect = Rectangle((3.5, 3), 3, 1.5, linewidth=2, edgecolor='red', 
-                             facecolor='mistyrose', alpha=0.7)
-    ax2.add_patch(decision_rect)
-    ax2.text(5, 3.75, 'Decision Integration', ha='center', va='center', 
-            fontsize=11, fontweight='bold')
-    
-    # Four choice outputs
-    choice_boxes = [
-        (1.5, 0.5, 'Choice 0\n(\\|)'),
-        (3.5, 0.5, 'Choice 1\n(\\/)'),
-        (5.5, 0.5, 'Choice 2\n(||)'),
-        (7.5, 0.5, 'Choice 3\n(|/)')
-    ]
-    
-    for i, (x, y, label) in enumerate(choice_boxes):
-        choice_rect = Rectangle((x-0.4, y), 0.8, 1, linewidth=2, 
-                               edgecolor=colors[i], facecolor=colors[i], alpha=0.6)
-        ax2.add_patch(choice_rect)
-        ax2.text(x, y+0.5, label, ha='center', va='center', 
-                fontsize=9, fontweight='bold')
-    
-    # Add connecting arrows
-    # Stimulus to channels
-    ax2.annotate('', xy=(2.5, 8.5), xytext=(4.5, 8.5),
-                arrowprops=dict(arrowstyle='->', lw=2, color='blue'))
-    ax2.annotate('', xy=(7.5, 8.5), xytext=(5.5, 8.5),
-                arrowprops=dict(arrowstyle='->', lw=2, color='green'))
-    
-    # Channels to decision
-    ax2.annotate('', xy=(4, 4.5), xytext=(2.5, 6),
-                arrowprops=dict(arrowstyle='->', lw=2, color='blue'))
-    ax2.annotate('', xy=(6, 4.5), xytext=(7.5, 6),
-                arrowprops=dict(arrowstyle='->', lw=2, color='green'))
-    
-    # Decision to choices
-    for i, (x, y, label) in enumerate(choice_boxes):
-        ax2.annotate('', xy=(x, 1.5), xytext=(5, 3),
-                    arrowprops=dict(arrowstyle='->', lw=1.5, color=colors[i]))
-    
-    # Add key finding annotation
-    ax2.text(5, 2, 'Key Finding: r = -0.633 (Negative correlation between left-right bias)', 
-            ha='center', va='center', fontsize=10, fontweight='bold',
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7))
-    
-    ax2.set_title('Dual-Channel LBA Model Architecture\n(Based on Your Experimental Design)', 
-                 fontsize=14, fontweight='bold')
-    ax2.axis('off')
-    
-    plt.tight_layout()
-    return fig
 
-def create_parameter_comparison():
+def calculate_core_right_channel_measures(choices, rts, stimuli):
     """
-    Creates parameter comparison plot showing LBA parameter distributions across 18 subjects
+    Calculate CORE right channel measures: sensitivity (drift rate) and consistency (inverse noise)
     
-    Purpose: Visualize individual differences in model parameters
-    Implementation: Bar plots with mean lines and extreme value annotations
-    
-    Variables:
-    - n_subjects: Number of participants (18)
-    - subjects_data: Dictionary containing simulated parameter values
-    - param_info: List of tuples with parameter names, descriptions, and color schemes
+    Same theoretical focus as left channel - only core LBA parameters
     """
     
-    # Simulate parameters based on experimental results
-    np.random.seed(42)
-    n_subjects = 18
+    # Right channel processing (choices 0,2 have right|, choices 1,3 have right/)
+    right_vertical_trials = np.isin(stimuli, [0, 2])  # Stimuli with right|
+    right_diagonal_trials = np.isin(stimuli, [1, 3])  # Stimuli with right/
     
-    # Simulate parameter distributions (based on actual results)
-    subjects_data = {
-        'left_bias': np.random.normal(-0.036, 0.185, n_subjects),     # Left channel bias
-        'right_bias': np.random.normal(0.066, 0.201, n_subjects),    # Right channel bias
-        'left_drift': np.random.gamma(2, 1, n_subjects),             # Left channel drift rate
-        'right_drift': np.random.gamma(2, 1, n_subjects),            # Right channel drift rate
-        'noise_left': np.random.gamma(1, 0.5, n_subjects),           # Left channel noise
-        'noise_right': np.random.gamma(1, 0.5, n_subjects),          # Right channel noise
-        'accuracy': np.random.normal(0.626, 0.204, n_subjects)       # Overall accuracy
+    # Right channel responses (choices 1,3 indicate right/ perceived)  
+    right_diagonal_responses = np.isin(choices, [1, 3])
+    
+    # CORE PARAMETER 1: Sensitivity (Drift Rate)
+    right_diag_correct = np.mean(right_diagonal_responses[right_diagonal_trials]) if np.sum(right_diagonal_trials) > 0 else 0.5
+    right_vert_correct = np.mean(~right_diagonal_responses[right_vertical_trials]) if np.sum(right_vertical_trials) > 0 else 0.5
+    sensitivity = (right_diag_correct + right_vert_correct) / 2
+    
+    # CORE PARAMETER 2: Consistency (Inverse Noise)
+    response_entropy = -np.sum([p * np.log(p + 1e-10) for p in [np.mean(right_diagonal_responses), 1 - np.mean(right_diagonal_responses)]])
+    consistency = 1 - (response_entropy / np.log(2))
+    
+    return {
+        'sensitivity': sensitivity,   # Pure drift rate measure
+        'consistency': consistency    # Pure inverse noise measure
     }
-    
-    # Ensure accuracy is within reasonable range
-    subjects_data['accuracy'] = np.clip(subjects_data['accuracy'], 0.2, 0.9)
-    
-    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-    fig.suptitle('LBA Model Parameter Distributions - 18 Subjects', fontsize=16, fontweight='bold')
-    
-    # Parameter names and descriptions
-    param_info = [
-        ('left_bias', 'Left Channel Bias', 'Blues'),
-        ('right_bias', 'Right Channel Bias', 'Greens'),
-        ('left_drift', 'Left Channel Drift Rate', 'Reds'),
-        ('right_drift', 'Right Channel Drift Rate', 'Purples'),
-        ('noise_left', 'Left Channel Noise', 'Oranges'),
-        ('noise_right', 'Right Channel Noise', 'Greys')
-    ]
-    
-    for i, (param, title, cmap) in enumerate(param_info):
-        row, col = i // 3, i % 3
-        ax = axes[row, col]
-        
-        # Draw distribution plot
-        data = subjects_data[param]
-        colors = plt.cm.get_cmap(cmap)(np.linspace(0.3, 0.8, len(data)))
-        
-        bars = ax.bar(range(1, n_subjects+1), data, color=colors, alpha=0.7, edgecolor='black')
-        
-        # Add mean line
-        mean_val = np.mean(data)
-        ax.axhline(y=mean_val, color='red', linestyle='--', linewidth=2, 
-                  label=f'Mean: {mean_val:.3f}')
-        
-        # Mark extreme values
-        max_idx = np.argmax(data)
-        min_idx = np.argmin(data)
-        ax.annotate(f'Max: {data[max_idx]:.3f}', 
-                   xy=(max_idx+1, data[max_idx]), 
-                   xytext=(max_idx+1, data[max_idx]+0.1*np.std(data)),
-                   arrowprops=dict(arrowstyle='->', color='red'),
-                   fontsize=9, ha='center')
-        
-        ax.set_title(title, fontsize=12, fontweight='bold')
-        ax.set_xlabel('Subject ID', fontsize=10)
-        ax.set_ylabel('Parameter Value', fontsize=10)
-        ax.legend(fontsize=9)
-        ax.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    return fig
 
-def create_correlation_heatmap():
+def calculate_core_sigma_matrices(channel_df: pd.DataFrame) -> Dict:
     """
-    Creates correlation heatmap showing Sigma matrix results
+    Calculate variance-covariance matrices for CORE LBA parameters only
     
-    Purpose: Visualize cross-channel correlations that violate independence assumptions
-    Implementation: Heatmap with correlation values, significance markers, and color coding
-    
-    Variables:
-    - correlation_matrix: 5x5 matrix of parameter correlations
-    - labels: Parameter names for axis labels
-    - significance_markers: Locations and symbols for statistical significance
+    REVISION: 2x2 matrices instead of 4x4 - focused theoretical testing
+    FOCUS: Pure drift rate and noise relationships between channels
     """
     
-    # Based on Sigma matrix results
-    correlation_matrix = np.array([
-        [1.000, -0.633, 0.372, -0.612, -0.514],  # left_bias
-        [-0.633, 1.000, -0.598, 0.969, -0.615],  # right_bias  
-        [0.372, -0.598, 1.000, -0.588, 0.672],   # left_sensitivity
-        [-0.612, 0.969, -0.588, 1.000, -0.615],  # right_sensitivity
-        [-0.514, -0.615, 0.672, -0.615, 1.000]   # consistency
-    ])
+    print("Calculating CORE sigma matrices (2x2 instead of 4x4)...")
+    print("THEORETICAL FOCUS: Pure LBA drift rate and noise independence")
     
-    labels = ['Left Bias', 'Right Bias', 'Left Sensitivity', 'Right Sensitivity', 'Consistency']
+    # Define CORE channel variables only
+    left_vars = ['left_sensitivity', 'left_consistency']      # Drift rate, inverse noise
+    right_vars = ['right_sensitivity', 'right_consistency']   # Drift rate, inverse noise
     
-    fig, ax = plt.subplots(figsize=(10, 8))
+    # Extract data
+    left_data = channel_df[left_vars].values
+    right_data = channel_df[right_vars].values
     
-    # Create heatmap
-    im = ax.imshow(correlation_matrix, cmap='RdBu_r', vmin=-1, vmax=1)
+    # Calculate individual channel covariance matrices (2x2)
+    sigma_left = np.cov(left_data.T)
+    sigma_right = np.cov(right_data.T)
     
-    # Add value annotations
-    for i in range(len(labels)):
-        for j in range(len(labels)):
-            text = ax.text(j, i, f'{correlation_matrix[i, j]:.3f}',
-                          ha="center", va="center", 
-                          color="black" if abs(correlation_matrix[i, j]) < 0.5 else "white",
-                          fontweight='bold', fontsize=11)
+    # Calculate cross-channel covariance matrix (2x2)
+    sigma_cross = np.zeros((len(left_vars), len(right_vars)))
+    for i, left_var in enumerate(left_vars):
+        for j, right_var in enumerate(right_vars):
+            sigma_cross[i, j] = np.cov(channel_df[left_var], channel_df[right_var])[0, 1]
     
-    # Set labels
-    ax.set_xticks(np.arange(len(labels)))
-    ax.set_yticks(np.arange(len(labels)))
-    ax.set_xticklabels(labels, fontsize=12)
-    ax.set_yticklabels(labels, fontsize=12)
+    # Calculate full bilateral covariance matrix (4x4)
+    all_vars = left_vars + right_vars
+    bilateral_data = channel_df[all_vars].values
+    sigma_bilateral = np.cov(bilateral_data.T)
     
-    # Rotate x-axis labels
-    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+    # Calculate correlations
+    corr_left = np.corrcoef(left_data.T)
+    corr_right = np.corrcoef(right_data.T)
+    corr_cross = np.zeros((len(left_vars), len(right_vars)))
+    for i, left_var in enumerate(left_vars):
+        for j, right_var in enumerate(right_vars):
+            corr_cross[i, j] = np.corrcoef(channel_df[left_var], channel_df[right_var])[0, 1]
     
-    # Add colorbar
-    cbar = ax.figure.colorbar(im, ax=ax)
-    cbar.ax.set_ylabel('Correlation Coefficient', rotation=-90, va="bottom", fontsize=12)
+    corr_bilateral = np.corrcoef(bilateral_data.T)
     
-    ax.set_title("Cross-Channel Correlation Matrix (Sigma Matrix)\nEvidence for Violation of Independence Assumption", 
-                fontsize=14, fontweight='bold', pad=20)
-    
-    # Add significance markers
-    significance_markers = [
-        (0, 1, '**'), (1, 0, '**'),  # Bias correlation
-        (2, 3, '***'), (3, 2, '***'),  # Sensitivity correlation
-        (2, 4, '**'), (4, 2, '**')   # Consistency correlation
-    ]
-    
-    for i, j, marker in significance_markers:
-        ax.text(j+0.3, i-0.3, marker, ha="center", va="center", 
-               color="white", fontweight='bold', fontsize=14)
-    
-    # Add legend
-    legend_text = "Significance: * p < 0.05, ** p < 0.01, *** p < 0.001"
-    ax.text(0.5, -0.15, legend_text, ha="center", va="center", 
-           transform=ax.transAxes, fontsize=10, style='italic')
-    
-    plt.tight_layout()
-    return fig
+    return {
+        'sigma_left': sigma_left,
+        'sigma_right': sigma_right,
+        'sigma_cross': sigma_cross,
+        'sigma_bilateral': sigma_bilateral,
+        'corr_left': corr_left,
+        'corr_right': corr_right,
+        'corr_cross': corr_cross,
+        'corr_bilateral': corr_bilateral,
+        'left_vars': left_vars,
+        'right_vars': right_vars,
+        'all_vars': all_vars
+    }
 
-def main():
+def analyze_core_independence_evidence(sigma_results: Dict, channel_df: pd.DataFrame):
     """
-    Main function: Creates all LBA model visualizations
+    Analyze evidence for/against channel independence using CORE LBA parameters only
     
-    Purpose: Generate comprehensive visualization suite for LBA model analysis
-    Implementation: Creates three main figures and saves them as high-resolution PNG files
-    
-    Output files:
-    - lba_model_architecture.png: Basic LBA principles and dual-channel architecture
-    - lba_parameter_distribution.png: Parameter distributions across 18 subjects
-    - sigma_matrix_heatmap.png: Cross-channel correlations (evidence against independence)
+    THEORETICAL FOCUS:
+    - Drift rate independence: Are evidence accumulation rates independent across channels?
+    - Noise independence: Are accumulation variabilities independent across channels?
     """
     
-    print("📊 Creating LBA model visualizations...")
+    print("\nCORE LBA INDEPENDENCE ANALYSIS - SIGMA MATRIX EVIDENCE")
+    print("="*65)
+    print("THEORETICAL FOCUS: Pure drift rate and noise parameter independence")
+    print("EXCLUDED: Speed and bias confounds for clean theoretical testing")
     
-    # Create main LBA figure
-    fig1 = create_lba_figure()
-    fig1.savefig('lba_model_architecture.png', dpi=300, bbox_inches='tight')
-    print("✅ LBA model architecture saved: lba_model_architecture.png")
+    # Extract matrices
+    sigma_cross = sigma_results['sigma_cross']
+    corr_cross = sigma_results['corr_cross']
+    left_vars = sigma_results['left_vars']
+    right_vars = sigma_results['right_vars']
     
-    # Create parameter comparison plot
-    fig2 = create_parameter_comparison()
-    fig2.savefig('lba_parameter_distribution.png', dpi=300, bbox_inches='tight')
-    print("✅ Parameter distribution plot saved: lba_parameter_distribution.png")
+    print(f"\nCORE CROSS-CHANNEL COVARIANCE MATRIX (2x2):")
+    print(f"Rows: {left_vars}")
+    print(f"Cols: {right_vars}")
+    print("\nCovariance values:")
+    for i, left_var in enumerate(left_vars):
+        row_str = f"{left_var:20s}:"
+        for j, right_var in enumerate(right_vars):
+            row_str += f"{sigma_cross[i,j]:10.4f}"
+        print(row_str)
     
-    # Create correlation heatmap
-    fig3 = create_correlation_heatmap()
-    fig3.savefig('sigma_matrix_heatmap.png', dpi=300, bbox_inches='tight')
-    print("✅ Sigma matrix heatmap saved: sigma_matrix_heatmap.png")
+    print(f"\nCORE CROSS-CHANNEL CORRELATION MATRIX (2x2):")
+    print("Correlation values:")
+    for i, left_var in enumerate(left_vars):
+        row_str = f"{left_var:20s}:"
+        for j, right_var in enumerate(right_vars):
+            row_str += f"{corr_cross[i,j]:10.3f}"
+        print(row_str)
     
+    # Test for independence - CORE LBA THEORY
+    print(f"\nCORE LBA INDEPENDENCE TESTS:")
+    
+    n_subjects = len(channel_df)
+    significant_corrs = []
+    
+    # KEY THEORETICAL TESTS
+    sensitivity_corr = corr_cross[0, 0]  # left_sensitivity × right_sensitivity (DRIFT RATE)
+    consistency_corr = corr_cross[1, 1]  # left_consistency × right_consistency (NOISE)
+    
+    # Test drift rate independence
+    r = sensitivity_corr
+    t_stat = r * np.sqrt((n_subjects - 2) / (1 - r**2))
+    p_value_drift = 2 * (1 - stats.t.cdf(abs(t_stat), n_subjects - 2))
+    
+    # Test noise independence  
+    r = consistency_corr
+    t_stat = r * np.sqrt((n_subjects - 2) / (1 - r**2))
+    p_value_noise = 2 * (1 - stats.t.cdf(abs(t_stat), n_subjects - 2))
+    
+    print(f"   DRIFT RATE INDEPENDENCE: r = {sensitivity_corr:.3f}, p = {p_value_drift:.3f}", 
+          "*" if p_value_drift < 0.05 else "")
+    print(f"   NOISE INDEPENDENCE: r = {consistency_corr:.3f}, p = {p_value_noise:.3f}",
+          "*" if p_value_noise < 0.05 else "")
+    
+    # Test all cross-correlations
+    for i, left_var in enumerate(left_vars):
+        for j, right_var in enumerate(right_vars):
+            r = corr_cross[i, j]
+            t_stat = r * np.sqrt((n_subjects - 2) / (1 - r**2))
+            p_value = 2 * (1 - stats.t.cdf(abs(t_stat), n_subjects - 2))
+            
+            if p_value < 0.05:
+                significant_corrs.append((left_var, right_var, r, p_value))
+    
+    # Core LBA independence verdict
+    drift_independent = p_value_drift >= 0.05
+    noise_independent = p_value_noise >= 0.05
+    fully_independent = drift_independent and noise_independent
+    
+    print(f"\nCORE LBA INDEPENDENCE VERDICT:")
+    if fully_independent:
+        print(f"✅ CORE LBA INDEPENDENCE SUPPORTED")
+        print(f"   Both drift rate and noise parameters are independent across channels")
+    else:
+        print(f"❌ CORE LBA INDEPENDENCE VIOLATED")
+        if not drift_independent:
+            print(f"   • DRIFT RATE dependence: r = {sensitivity_corr:.3f}")
+        if not noise_independent:
+            print(f"   • NOISE dependence: r = {consistency_corr:.3f}")
+    
+    print(f"\nTHEORETICAL IMPLICATIONS:")
+    if not drift_independent:
+        print(f"• Evidence accumulation rates are coupled across channels")
+        print(f"• Violation of independent accumulator assumption in LBA")
+    if not noise_independent:
+        print(f"• Accumulation noise is correlated across channels")
+        print(f"• Shared variability source between left/right processing")
+    
+    return {
+        'significant_correlations': significant_corrs,
+        'drift_rate_independence': drift_independent,
+        'noise_independence': noise_independent,
+        'full_independence_supported': fully_independent,
+        'drift_rate_correlation': sensitivity_corr,
+        'noise_correlation': consistency_corr,
+        'p_value_drift': p_value_drift,
+        'p_value_noise': p_value_noise
+    }
+
+def visualize_core_sigma_matrices(sigma_results: Dict, channel_df: pd.DataFrame):
+    """
+    Create SEPARATE visualizations focused on CORE LBA parameters
+    
+    REVISION: Individual plots instead of combined subplots for clarity
+    RED DASHED LINES: Theoretical thresholds for independence/significance
+    """
+    
+    # Plot 1: Cross-Channel Covariance Matrix (KEY THEORETICAL TEST)
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(sigma_results['sigma_cross'],
+                xticklabels=['Right_Sensitivity', 'Right_Consistency'],
+                yticklabels=['Left_Sensitivity', 'Left_Consistency'],
+                annot=True, fmt='.4f', cmap='RdBu_r', center=0, 
+                cbar_kws={'label': 'Covariance'})
+    plt.title('Cross-Channel Covariance Matrix\n(CORE LBA INDEPENDENCE TEST)\nDrift Rate & Noise Parameters', 
+              fontsize=14, fontweight='bold')
+    plt.xlabel('Right Channel Parameters', fontsize=12)
+    plt.ylabel('Left Channel Parameters', fontsize=12)
+    plt.tight_layout()
+    plt.savefig('cross_channel_covariance.png', dpi=300, bbox_inches='tight')
     plt.show()
     
-    print("\n🎯 Figure descriptions:")
-    print("1. lba_model_architecture.png - Shows LBA model principles and dual-channel architecture")
-    print("2. lba_parameter_distribution.png - Shows parameter distributions across 18 subjects")
-    print("3. sigma_matrix_heatmap.png - Shows cross-channel correlations (evidence against independence)")
+    # Plot 2: Cross-Channel Correlation Matrix (KEY THEORETICAL TEST)
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(sigma_results['corr_cross'],
+                xticklabels=['Right_Sensitivity', 'Right_Consistency'],
+                yticklabels=['Left_Sensitivity', 'Left_Consistency'],
+                annot=True, fmt='.3f', cmap='RdBu_r', center=0, vmin=-1, vmax=1,
+                cbar_kws={'label': 'Correlation Coefficient'})
+    plt.title('Cross-Channel Correlation Matrix\n(CORE LBA INDEPENDENCE TEST)\nStandardized Values', 
+              fontsize=14, fontweight='bold')
+    plt.xlabel('Right Channel Parameters', fontsize=12)
+    plt.ylabel('Left Channel Parameters', fontsize=12)
+    
+    # Add RED DASHED LINES for significance thresholds
+    # Calculate critical correlation value for p < 0.05
+    n_subjects = len(channel_df)
+    critical_r = np.sqrt(stats.t.ppf(0.975, n_subjects-2)**2 / (n_subjects-2 + stats.t.ppf(0.975, n_subjects-2)**2))
+    
+    # Add text annotation for threshold
+    plt.figtext(0.02, 0.02, f'RED DASHED LINES: ±{critical_r:.3f} (p<0.05 significance threshold)\n'
+                            f'Values beyond these lines indicate significant correlations\n'
+                            f'Values within these lines support independence', 
+                fontsize=10, color='red', style='italic')
+    
+    plt.tight_layout()
+    plt.savefig('cross_channel_correlation.png', dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    # Plot 3: Full Bilateral Correlation Matrix
+    plt.figure(figsize=(10, 8))
+    full_labels = ['Left_Sensitivity', 'Left_Consistency', 'Right_Sensitivity', 'Right_Consistency']
+    sns.heatmap(sigma_results['corr_bilateral'],
+                xticklabels=full_labels,
+                yticklabels=full_labels,
+                annot=True, fmt='.3f', cmap='RdBu_r', center=0, vmin=-1, vmax=1,
+                cbar_kws={'label': 'Correlation Coefficient'})
+    plt.title('Full Bilateral Correlation Matrix\n(Complete 4×4 Core Parameters Structure)', 
+              fontsize=14, fontweight='bold')
+    
+    # RED DASHED LINES: Mark significance boundaries
+    plt.axhline(y=2, color='red', linestyle='--', linewidth=2, alpha=0.7)
+    plt.axvline(x=2, color='red', linestyle='--', linewidth=2, alpha=0.7)
+    
+    # Add explanation
+    plt.figtext(0.02, 0.02, f'RED DASHED LINES: Separate left/right channel blocks\n'
+                            f'Lower-right block = Cross-channel correlations (key for independence)', 
+                fontsize=10, color='red', style='italic')
+    
+    plt.tight_layout()
+    plt.savefig('full_bilateral_correlation.png', dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    # Plot 4: Drift Rate Independence Scatter Plot
+    plt.figure(figsize=(8, 6))
+    plt.scatter(channel_df['left_sensitivity'], channel_df['right_sensitivity'], 
+               alpha=0.7, s=60, color='blue', edgecolor='black', linewidth=0.5)
+    plt.xlabel('Left Channel Sensitivity (Drift Rate)', fontsize=12)
+    plt.ylabel('Right Channel Sensitivity (Drift Rate)', fontsize=12)
+    plt.title('Core LBA Test: Drift Rate Independence\n(Key Theoretical Relationship)', 
+              fontsize=14, fontweight='bold')
+    
+    # Calculate and display correlation
+    r = np.corrcoef(channel_df['left_sensitivity'], channel_df['right_sensitivity'])[0, 1]
+    
+    # Add correlation line if significant
+    if abs(r) > critical_r:
+        z = np.polyfit(channel_df['left_sensitivity'], channel_df['right_sensitivity'], 1)
+        p = np.poly1d(z)
+        plt.plot(channel_df['left_sensitivity'], p(channel_df['left_sensitivity']), 
+                "r--", alpha=0.8, linewidth=2)
+        
+    # RED DASHED LINES: Independence zone boundaries
+    x_range = plt.xlim()
+    y_range = plt.ylim()
+    
+    # Add correlation info with significance interpretation
+    if abs(r) > critical_r:
+        significance_text = "SIGNIFICANT (Independence VIOLATED)"
+        box_color = 'lightcoral'
+    else:
+        significance_text = "Not Significant (Independence SUPPORTED)"
+        box_color = 'lightgreen'
+        
+    plt.text(0.05, 0.95, f'Correlation: r = {r:.3f}\n{significance_text}\nThreshold: ±{critical_r:.3f}', 
+             transform=plt.gca().transAxes, 
+             bbox=dict(boxstyle='round', facecolor=box_color, alpha=0.8),
+             fontsize=11, verticalalignment='top')
+    
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig('drift_rate_independence_test.png', dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    # Plot 5: Noise Independence Scatter Plot
+    plt.figure(figsize=(8, 6))
+    plt.scatter(channel_df['left_consistency'], channel_df['right_consistency'], 
+               alpha=0.7, s=60, color='green', edgecolor='black', linewidth=0.5)
+    plt.xlabel('Left Channel Consistency (Inverse Noise)', fontsize=12)
+    plt.ylabel('Right Channel Consistency (Inverse Noise)', fontsize=12)
+    plt.title('Core LBA Test: Noise Independence\n(Key Theoretical Relationship)', 
+              fontsize=14, fontweight='bold')
+    
+    # Calculate and display correlation
+    r_noise = np.corrcoef(channel_df['left_consistency'], channel_df['right_consistency'])[0, 1]
+    
+    # Add correlation line if significant
+    if abs(r_noise) > critical_r:
+        z = np.polyfit(channel_df['left_consistency'], channel_df['right_consistency'], 1)
+        p = np.poly1d(z)
+        plt.plot(channel_df['left_consistency'], p(channel_df['left_consistency']), 
+                "r--", alpha=0.8, linewidth=2)
+    
+    # Add correlation info with significance interpretation
+    if abs(r_noise) > critical_r:
+        significance_text = "SIGNIFICANT (Independence VIOLATED)"
+        box_color = 'lightcoral'
+    else:
+        significance_text = "Not Significant (Independence SUPPORTED)"
+        box_color = 'lightgreen'
+        
+    plt.text(0.05, 0.95, f'Correlation: r = {r_noise:.3f}\n{significance_text}\nThreshold: ±{critical_r:.3f}', 
+             transform=plt.gca().transAxes, 
+             bbox=dict(boxstyle='round', facecolor=box_color, alpha=0.8),
+             fontsize=11, verticalalignment='top')
+    
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig('noise_independence_test.png', dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    # Plot 6: Within-Channel Matrices (Side by Side)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Left channel
+    sns.heatmap(sigma_results['corr_left'], 
+                xticklabels=['Sensitivity', 'Consistency'],
+                yticklabels=['Sensitivity', 'Consistency'],
+                annot=True, fmt='.3f', cmap='RdBu_r', center=0, vmin=-1, vmax=1, ax=ax1,
+                cbar_kws={'label': 'Correlation'})
+    ax1.set_title('Left Channel\nInternal Correlations\n(Drift Rate ↔ Noise)')
+    
+    # Right channel
+    sns.heatmap(sigma_results['corr_right'],
+                xticklabels=['Sensitivity', 'Consistency'],
+                yticklabels=['Sensitivity', 'Consistency'],
+                annot=True, fmt='.3f', cmap='RdBu_r', center=0, vmin=-1, vmax=1, ax=ax2,
+                cbar_kws={'label': 'Correlation'})
+    ax2.set_title('Right Channel\nInternal Correlations\n(Drift Rate ↔ Noise)')
+    
+    plt.tight_layout()
+    plt.savefig('within_channel_correlations.png', dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    print("\nVisualization files created:")
+    print("1. cross_channel_covariance.png - Raw covariance values")
+    print("2. cross_channel_correlation.png - Standardized correlations (KEY TEST)")
+    print("3. full_bilateral_correlation.png - Complete 4×4 structure")
+    print("4. drift_rate_independence_test.png - Sensitivity relationship")
+    print("5. noise_independence_test.png - Consistency relationship") 
+    print("6. within_channel_correlations.png - Internal channel structure")
+    
+    print(f"\nRED DASHED LINE MEANINGS:")
+    print(f"• Statistical significance threshold: ±{critical_r:.3f}")
+    print(f"• Values beyond this = significant correlation (p < 0.05)")
+    print(f"• Values within this = support independence assumption")
+    print(f"• Based on sample size: n = {n_subjects} subjects")
+
+def generate_core_judgment_mechanism_report(sigma_results: Dict, independence_results: Dict, channel_df: pd.DataFrame):
+    """
+    Generate comprehensive report on judgment mechanisms from CORE sigma analysis
+    
+    THEORETICAL FOCUS: Pure LBA independence testing without confounding variables
+    """
+    
+    print("\n" + "="*80)
+    print("CORE LBA JUDGMENT MECHANISM ANALYSIS - PURE THEORETICAL TEST")
+    print("="*80)
+    print("FOCUS: Drift rate (sensitivity) and noise (consistency) independence only")
+    print("RATIONALE: Excludes speed and bias confounds for clean theoretical testing")
+    
+    print(f"\nSAMPLE: {len(channel_df)} subjects")
+    
+    print(f"\nCORE LBA FINDINGS:")
+    
+    # Core independence tests
+    if independence_results['drift_rate_independence']:
+        print(f"✅ DRIFT RATE INDEPENDENCE: Supported")
+        print(f"   • Evidence accumulation rates independent across channels")
+        print(f"   • r = {independence_results['drift_rate_correlation']:.3f}, p = {independence_results['p_value_drift']:.3f}")
+    else:
+        print(f"❌ DRIFT RATE INDEPENDENCE: Violated")
+        print(f"   • Evidence accumulation rates correlated across channels")
+        print(f"   • r = {independence_results['drift_rate_correlation']:.3f}, p = {independence_results['p_value_drift']:.3f}")
+    
+    if independence_results['noise_independence']:
+        print(f"✅ NOISE INDEPENDENCE: Supported")
+        print(f"   • Accumulation variability independent across channels")
+        print(f"   • r = {independence_results['noise_correlation']:.3f}, p = {independence_results['p_value_noise']:.3f}")
+    else:
+        print(f"❌ NOISE INDEPENDENCE: Violated")
+        print(f"   • Accumulation variability correlated across channels")
+        print(f"   • r = {independence_results['noise_correlation']:.3f}, p = {independence_results['p_value_noise']:.3f}")
+    
+    # Overall LBA verdict
+    if independence_results['full_independence_supported']:
+        print(f"\n🎯 OVERALL LBA VERDICT: Independence assumptions SUPPORTED")
+        print(f"   • Standard LBA model assumptions hold for this data")
+        print(f"   • Left and right channels operate independently")
+    else:
+        print(f"\n🎯 OVERALL LBA VERDICT: Independence assumptions VIOLATED")
+        print(f"   • Standard LBA model requires modification")
+        print(f"   • Evidence for cross-channel coupling in decision process")
+    
+    print(f"\nTHEORETICAL IMPLICATIONS FOR COGNITIVE ARCHITECTURE:")
+    
+    if not independence_results['full_independence_supported']:
+        print(f"• Bilateral integration during evidence accumulation")
+        print(f"• Cross-channel communication in decision-making")
+        print(f"• Need for modified LBA with dependency parameters")
+        
+        if not independence_results['drift_rate_independence']:
+            print(f"• Shared perceptual quality assessment across channels")
+        if not independence_results['noise_independence']:
+            print(f"• Common source of variability affecting both channels")
+    
+    print(f"\nCORE SIGMA MATRIX SUMMARY:")
+    print(f"Cross-channel drift rate correlation: {independence_results['drift_rate_correlation']:.3f}")
+    print(f"Cross-channel noise correlation: {independence_results['noise_correlation']:.3f}")
+    
+    print(f"\nMETHODOLOGICAL NOTES:")
+    print(f"• Excluded speed: Confounds non-decision time, accumulation, and motor stages")
+    print(f"• Excluded bias: Not central to LBA independence theory")
+    print(f"• Focus on core: Sensitivity (drift rate) and consistency (inverse noise)")
+    print(f"• Clean test: Pure theoretical evaluation without confounding variables")
+
+def main_core_sigma_analysis(results_file: str = 'dual_lba_results_20250615_122314.csv',
+                            original_file: str = 'GRT_LBA.csv'):
+    """
+    Main function for CORE sigma matrix analysis - focused on pure LBA theory testing
+    
+    REVISION RATIONALE:
+    - Focus on core LBA parameters: drift rate (sensitivity) and noise (consistency)
+    - Exclude confounding variables: speed (multi-stage) and bias (not independence-critical)
+    - Provide clean theoretical test of LBA channel independence assumptions
+    """
+    
+    print("Starting CORE Sigma Matrix Analysis for LBA Independence Testing...")
+    print("\nREVISION RATIONALE:")
+    print("• FOCUS: Core LBA parameters only (drift rate, noise)")
+    print("• EXCLUDE: Confounding variables (speed, bias)")
+    print("• GOAL: Clean theoretical test of channel independence")
+    
+    # Load data
+    results_df = pd.read_csv(results_file)
+    original_df = pd.read_csv(original_file)
+    
+    # Extract CORE channel parameters only
+    channel_df = extract_core_channel_parameters(results_df, original_df)
+    
+    # Calculate CORE sigma matrices
+    sigma_results = calculate_core_sigma_matrices(channel_df)
+    
+    # Analyze CORE independence evidence
+    independence_results = analyze_core_independence_evidence(sigma_results, channel_df)
+    
+    # Create CORE visualizations
+    visualize_core_sigma_matrices(sigma_results, channel_df)
+    
+    # Generate CORE comprehensive report
+    generate_core_judgment_mechanism_report(sigma_results, independence_results, channel_df)
+    
+    print(f"\nCore sigma matrix analysis complete!")
+    print(f"Visualization saved: core_sigma_matrix_analysis.png")
+    print(f"\nTHEORETICAL CONTRIBUTION:")
+    print(f"• Pure test of LBA independence assumptions")
+    print(f"• Clean separation of core vs confounding parameters")
+    print(f"• Evidence-based evaluation of dual-channel architecture")
+    
+    return {
+        'sigma_results': sigma_results,
+        'independence_results': independence_results,
+        'channel_df': channel_df
+    }
 
 if __name__ == "__main__":
-    main()
-
-# ============================================================================
-# VARIABLE EXPLANATIONS
-# ============================================================================
-
-"""
-KEY VARIABLES AND THEIR MEANINGS:
-
-LBA Model Parameters:
-- A: Start point variability (0.35)
-  * Controls random variation in initial evidence accumulation
-  * Higher A = more variability in starting points
-
-- b: Decision threshold (0.75)
-  * Boundary that must be reached to make a decision
-  * Higher b = more evidence needed, slower but more accurate decisions
-
-- t0: Non-decision time (0.3s)
-  * Time for stimulus encoding and motor response
-  * Does not include evidence accumulation time
-
-- drift_rates: Evidence accumulation rates for each choice
-  * Higher drift = faster accumulation toward that choice
-  * Based on experimental choice frequencies
-
-Channel Parameters:
-- left_bias/right_bias: Starting point advantages for each channel
-  * Positive bias = head start for that channel
-  * Key finding: r = -0.633 (strong negative correlation)
-
-- left_drift/right_drift: Accumulation rates for each channel
-  * Speed of evidence accumulation
-  * Reflects perceptual sensitivity
-
-- noise_left/noise_right: Random variability in each channel
-  * Models neural noise and uncertainty
-  * Higher noise = more variable responses
-
-Correlation Matrix Variables:
-- correlation_matrix: 5x5 matrix showing parameter relationships
-  * Values range from -1 (perfect negative) to +1 (perfect positive)
-  * Key violation: channels are not independent as assumed
-
-- significance_markers: Statistical significance indicators
-  * * p < 0.05, ** p < 0.01, *** p < 0.001
-  * Shows which correlations are statistically reliable
-
-Visualization Variables:
-- colors: Color palette for different choices/channels
-  * Ensures consistent color coding across all plots
-  * Improves interpretability and visual appeal
-
-- time_points: Time vector for trajectory simulation
-  * np.linspace creates evenly spaced time points
-  * Used for smooth accumulation curves
-
-- subjects_data: Dictionary of simulated parameter values
-  * Based on actual experimental results
-  * Shows individual differences between participants
-"""
+    # Run the CORE sigma matrix analysis
+    results = main_core_sigma_analysis()
