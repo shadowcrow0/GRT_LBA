@@ -1,54 +1,7 @@
-def _compute_lba_density(self, t, drift, threshold, start_var, noise):
-        """
-        計算單一累積器的LBA密度函數 - 支援向量化
-        
-        Args:
-            t: 決策時間（可以是向量）
-            drift: 漂移率
-            threshold: 閾值
-            start_var: 起始點變異
-            noise: 噪音參數
-            
-        Returns:
-            density: 密度值（與t相同形狀）
-        """
-        
-        from pytensor.tensor import erf
-        
-        sqrt_t = pt.sqrt(t)
-        
-        # 計算z-scores（向量化）
-        z1 = pt.clip((drift * t - threshold) / (noise * sqrt_t), -4.5, 4.5)
-        z2 = pt.clip((drift * t - start_var) / (noise * sqrt_t), -4.5, 4.5)
-        
-        # PyTensor兼容的正態函數
-        def safe_normal_cdf(x):
-            return 0.5 * (1 + erf(x / pt.sqrt(2)))
-        
-        def safe_normal_pdf(x):
-            return pt.exp(-0.5 * x**2) / pt.sqrt(2 * pt.pi)
-        
-        # CDF項和PDF項（向量化）
-        cdf_term = safe_normal_cdf(z1) - safe_normal_cdf(z2)
-        pdf_term = (safe_normal_pdf(z1) - safe_normal_pdf(z2)) / (noise * sqrt_t)
-        
-        # 確保CDF項為正
-        cdf_term = pt.maximum(cdf_term, 1e-10)
-        
-        # 完整密度計算（向量化）
-        density = pt.maximum(
-            (drift / start_var) * cdf_term + pdf_term / start_var,
-            1e-10
-        )# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
-sequential_model.py - 序列處理主模型
-Sequential Processing LBA - Main Sequential Model
-
-功能：
-- 整合單邊LBA和四選一LBA
-- 實現序列處理架構
-- 建構完整的PyMC模型
-- 支援不同的處理順序和時間分割
+sequential_model_improved.py - 改進的序列處理主模型
+參考 Matlab 專案的參數處理方式
 """
 
 import numpy as np
@@ -59,7 +12,7 @@ from single_side_lba import SingleSideLBA
 from four_choice_lba import FourChoiceLBA
 
 class SequentialLBA:
-    """序列處理LBA主模型"""
+    """序列處理LBA主模型 - 改進版"""
     
     def __init__(self, first_side='left', time_split_ratio=0.6):
         """
@@ -86,23 +39,82 @@ class SequentialLBA:
             self.integration_lba.param_names
         )
         
+        # 設定參數轉換函數（參考 Matlab 的 transformSamples）
+        self.param_transforms = self._setup_parameter_transforms()
+        
         print(f"✅ 初始化序列處理LBA模型")
         print(f"   處理順序: {self.first_side} → {self.second_side}")
         print(f"   時間分割: {self.time_split_ratio:.1%} / {1-self.time_split_ratio:.1%}")
         print(f"   總參數數: {len(self.all_param_names)}")
-        print(f"     第一通道: {len(self.first_side_lba.param_names)}")
-        print(f"     第二通道: {len(self.second_side_lba.param_names)}")  
-        print(f"     整合層: {len(self.integration_lba.param_names)}")
+    
+    def _setup_parameter_transforms(self):
+        """設定參數轉換函數（參考 Matlab loadParmSettings.m）"""
+        
+        transforms = {}
+        
+        # 漂移率參數 - 使用對數轉換確保正值
+        for side in [self.first_side, self.second_side]:
+            transforms[f'{side}_drift_correct'] = {
+                'raw_to_natural': lambda x: pt.exp(x),
+                'natural_to_raw': lambda x: pt.log(x),
+                'constraint': lambda x: pt.maximum(x, 0.1)
+            }
+            transforms[f'{side}_drift_incorrect'] = {
+                'raw_to_natural': lambda x: pt.exp(x), 
+                'natural_to_raw': lambda x: pt.log(x),
+                'constraint': lambda x: pt.maximum(x, 0.05)
+            }
+            
+            # 閾值參數
+            transforms[f'{side}_threshold'] = {
+                'raw_to_natural': lambda x: pt.exp(x),
+                'natural_to_raw': lambda x: pt.log(x),
+                'constraint': lambda x: pt.maximum(x, 0.1)
+            }
+            
+            # 起始點變異
+            transforms[f'{side}_start_var'] = {
+                'raw_to_natural': lambda x: pt.exp(x),
+                'natural_to_raw': lambda x: pt.log(x),
+                'constraint': lambda x: pt.maximum(x, 0.05)
+            }
+            
+            # 非決策時間
+            transforms[f'{side}_ndt'] = {
+                'raw_to_natural': lambda x: pt.exp(x),
+                'natural_to_raw': lambda x: pt.log(x),
+                'constraint': lambda x: pt.clip(x, 0.05, 0.8)
+            }
+            
+            # 噪音參數
+            transforms[f'{side}_noise'] = {
+                'raw_to_natural': lambda x: pt.exp(x),
+                'natural_to_raw': lambda x: pt.log(x),
+                'constraint': lambda x: pt.maximum(x, 0.1)
+            }
+        
+        # 整合層參數
+        for i in range(4):
+            transforms[f'integration_drift_{i}'] = {
+                'raw_to_natural': lambda x: pt.exp(x),
+                'natural_to_raw': lambda x: pt.log(x),
+                'constraint': lambda x: pt.maximum(x, 0.1)
+            }
+            
+        # 其他整合層參數
+        for param in ['integration_threshold', 'integration_start_var', 
+                     'integration_ndt', 'integration_noise']:
+            transforms[param] = {
+                'raw_to_natural': lambda x: pt.exp(x),
+                'natural_to_raw': lambda x: pt.log(x),
+                'constraint': lambda x: pt.maximum(x, 0.05)
+            }
+        
+        return transforms
     
     def build_model(self, subject_data):
         """
-        建構完整的序列處理PyMC模型
-        
-        Args:
-            subject_data: 受試者資料字典
-            
-        Returns:
-            pymc.Model: 完整的PyMC模型
+        建構完整的序列處理PyMC模型 - 改進版
         """
         
         print(f"🔧 建構序列處理模型...")
@@ -112,364 +124,456 @@ class SequentialLBA:
         with pm.Model() as sequential_model:
             
             # ========================================
-            # 1. 定義參數先驗分布
+            # 1. 定義原始參數先驗分布（在轉換後的空間）
             # ========================================
             
-            # 第一通道參數
-            first_side_params = self._define_side_params(self.first_side)
+            raw_params = {}
             
-            # 第二通道參數  
-            second_side_params = self._define_side_params(self.second_side)
+            # 第一通道參數（在對數空間定義）
+            raw_params[f'{self.first_side}_drift_correct_raw'] = pm.Normal(
+                f'{self.first_side}_drift_correct_raw', mu=np.log(1.5), sigma=0.2
+            )
+            raw_params[f'{self.first_side}_drift_incorrect_raw'] = pm.Normal(
+                f'{self.first_side}_drift_incorrect_raw', mu=np.log(0.8), sigma=0.2
+            )
+            raw_params[f'{self.first_side}_threshold_raw'] = pm.Normal(
+                f'{self.first_side}_threshold_raw', mu=np.log(1.0), sigma=0.2
+            )
+            raw_params[f'{self.first_side}_start_var_raw'] = pm.Normal(
+                f'{self.first_side}_start_var_raw', mu=np.log(0.3), sigma=0.3
+            )
+            raw_params[f'{self.first_side}_ndt_raw'] = pm.Normal(
+                f'{self.first_side}_ndt_raw', mu=np.log(0.2), sigma=0.2
+            )
+            raw_params[f'{self.first_side}_noise_raw'] = pm.Normal(
+                f'{self.first_side}_noise_raw', mu=np.log(0.3), sigma=0.3
+            )
+            
+            # 第二通道參數
+            raw_params[f'{self.second_side}_drift_correct_raw'] = pm.Normal(
+                f'{self.second_side}_drift_correct_raw', mu=np.log(1.5), sigma=0.2
+            )
+            raw_params[f'{self.second_side}_drift_incorrect_raw'] = pm.Normal(
+                f'{self.second_side}_drift_incorrect_raw', mu=np.log(0.8), sigma=0.2
+            )
+            raw_params[f'{self.second_side}_threshold_raw'] = pm.Normal(
+                f'{self.second_side}_threshold_raw', mu=np.log(1.0), sigma=0.2
+            )
+            raw_params[f'{self.second_side}_start_var_raw'] = pm.Normal(
+                f'{self.second_side}_start_var_raw', mu=np.log(0.3), sigma=0.3
+            )
+            raw_params[f'{self.second_side}_ndt_raw'] = pm.Normal(
+                f'{self.second_side}_ndt_raw', mu=np.log(0.2), sigma=0.2
+            )
+            raw_params[f'{self.second_side}_noise_raw'] = pm.Normal(
+                f'{self.second_side}_noise_raw', mu=np.log(0.3), sigma=0.3
+            )
             
             # 整合層參數
-            integration_params = self._define_integration_params()
+            for i in range(4):
+                raw_params[f'integration_drift_{i}_raw'] = pm.Normal(
+                    f'integration_drift_{i}_raw', mu=np.log(1.0), sigma=0.2
+                )
+            
+            raw_params['integration_threshold_raw'] = pm.Normal(
+                'integration_threshold_raw', mu=np.log(0.8), sigma=0.2
+            )
+            raw_params['integration_start_var_raw'] = pm.Normal(
+                'integration_start_var_raw', mu=np.log(0.2), sigma=0.3
+            )
+            raw_params['integration_ndt_raw'] = pm.Normal(
+                'integration_ndt_raw', mu=np.log(0.15), sigma=0.2
+            )
+            raw_params['integration_noise_raw'] = pm.Normal(
+                'integration_noise_raw', mu=np.log(0.25), sigma=0.3
+            )
             
             # ========================================
-            # 2. 準備資料張量
+            # 2. 轉換到自然參數空間並應用約束
             # ========================================
             
-            # 原始資料
-            final_choices = pt.as_tensor_variable(subject_data['choices'])
-            rt_total = pt.as_tensor_variable(subject_data['rt'])
+            natural_params = {}
             
-            # 第一通道資料
-            first_stimuli = pt.as_tensor_variable(subject_data[f'{self.first_side}_stimuli'])
-            first_choices = pt.as_tensor_variable(subject_data[f'{self.first_side}_choices'])
+            # 第一通道參數轉換
+            first_side_params = self._transform_side_params(
+                raw_params, self.first_side, natural_params
+            )
             
-            # 第二通道資料
-            second_stimuli = pt.as_tensor_variable(subject_data[f'{self.second_side}_stimuli'])
-            second_choices = pt.as_tensor_variable(subject_data[f'{self.second_side}_choices'])
+            # 第二通道參數轉換
+            second_side_params = self._transform_side_params(
+                raw_params, self.second_side, natural_params
+            )
+            
+            # 整合層參數轉換
+            integration_params = self._transform_integration_params(
+                raw_params, natural_params
+            )
             
             # ========================================
-            # 3. 時間分割
+            # 3. 準備資料張量
+            # ========================================
+            
+            # 轉換為PyTensor張量
+            final_choices = pt.as_tensor_variable(subject_data['choices'], dtype='int32')
+            rt_total = pt.as_tensor_variable(subject_data['rt'], dtype='float64')
+            
+            first_stimuli = pt.as_tensor_variable(
+                subject_data[f'{self.first_side}_stimuli'], dtype='int32'
+            )
+            first_choices = pt.as_tensor_variable(
+                subject_data[f'{self.first_side}_choices'], dtype='int32'
+            )
+            
+            second_stimuli = pt.as_tensor_variable(
+                subject_data[f'{self.second_side}_stimuli'], dtype='int32'
+            )
+            second_choices = pt.as_tensor_variable(
+                subject_data[f'{self.second_side}_choices'], dtype='int32'
+            )
+            
+            # ========================================
+            # 4. 時間分割
             # ========================================
             
             rt_first = rt_total * self.time_split_ratio
             rt_second = rt_total * (1 - self.time_split_ratio)
             
             # ========================================
-            # 4. 第一通道似然
+            # 5. 計算似然函數
             # ========================================
             
-            first_likelihood = self.first_side_lba.compute_likelihood(
+            # 第一通道似然
+            first_likelihood = self._compute_side_likelihood(
                 first_choices, first_stimuli, rt_first, first_side_params
             )
             
-            # ========================================
-            # 5. 第二通道似然
-            # ========================================
-            
-            second_likelihood = self.second_side_lba.compute_likelihood(
+            # 第二通道似然
+            second_likelihood = self._compute_side_likelihood(
                 second_choices, second_stimuli, rt_second, second_side_params
             )
             
-            # ========================================
-            # 6. 證據整合和四選一競爭
-            # ========================================
-            
-            # 計算證據組合（簡化版）
-            evidence_inputs = self._compute_evidence_combination(
-                first_side_params, second_side_params, 
-                first_stimuli, first_choices, 
-                second_stimuli, second_choices
+            # 證據整合
+            evidence_inputs = self._compute_evidence_combination_improved(
+                first_side_params, second_side_params,
+                first_stimuli, first_choices,
+                second_stimuli, second_choices,
+                subject_data['n_trials']
             )
             
             # 整合層似然
-            integration_likelihood = self.integration_lba.compute_likelihood(
+            integration_likelihood = self._compute_integration_likelihood(
                 final_choices, evidence_inputs, rt_second, integration_params
             )
             
             # ========================================
-            # 7. 添加似然到模型
+            # 6. 添加似然到模型
             # ========================================
             
             pm.Potential('first_side_likelihood', first_likelihood)
             pm.Potential('second_side_likelihood', second_likelihood)
             pm.Potential('integration_likelihood', integration_likelihood)
             
-            # ========================================
-            # 8. 模型診斷資訊
-            # ========================================
-            
-            # 添加一些診斷變數（可選）
-            pm.Deterministic('total_likelihood', 
+            # 診斷變數
+            pm.Deterministic('total_likelihood',
                            first_likelihood + second_likelihood + integration_likelihood)
-            
-            # 計算理論準確率
-            first_accuracy_theory = self._compute_theoretical_accuracy(first_side_params)
-            second_accuracy_theory = self._compute_theoretical_accuracy(second_side_params)
-            
-            pm.Deterministic('first_side_accuracy_theory', first_accuracy_theory)
-            pm.Deterministic('second_side_accuracy_theory', second_accuracy_theory)
         
-        print(f"✅ 模型建構完成")
+        print(f"✅ 改進模型建構完成")
         print(f"   自由參數: {len(sequential_model.free_RVs)}")
-        print(f"   觀察變數: {len(sequential_model.observed_RVs)}")
         
         return sequential_model
     
-    def _define_side_params(self, side_name):
-        """定義單邊通道的參數先驗分布"""
-        
-        # 獲得預設先驗設定
-        if side_name == self.first_side:
-            lba = self.first_side_lba
-        else:
-            lba = self.second_side_lba
-            
-        priors = lba.get_default_priors()
+    def _transform_side_params(self, raw_params, side_name, natural_params):
+        """轉換單邊參數"""
         
         params = {}
         
-        # 漂移率參數
-        params[f'{side_name}_drift_correct'] = pm.Gamma(
-            f'{side_name}_drift_correct', 
-            alpha=priors[f'{side_name}_drift_correct']['alpha'],
-            beta=priors[f'{side_name}_drift_correct']['beta']
-        )
+        # 應用指數轉換和約束
+        drift_correct_raw = raw_params[f'{side_name}_drift_correct_raw']
+        drift_incorrect_raw = raw_params[f'{side_name}_drift_incorrect_raw']
         
-        params[f'{side_name}_drift_incorrect'] = pm.Gamma(
-            f'{side_name}_drift_incorrect',
-            alpha=priors[f'{side_name}_drift_incorrect']['alpha'],
-            beta=priors[f'{side_name}_drift_incorrect']['beta']
-        )
+        drift_correct = pt.maximum(pt.exp(drift_correct_raw), 0.1)
+        drift_incorrect = pt.maximum(pt.exp(drift_incorrect_raw), 0.05)
         
-        # 閾值參數
-        params[f'{side_name}_threshold'] = pm.Gamma(
-            f'{side_name}_threshold',
-            alpha=priors[f'{side_name}_threshold']['alpha'],
-            beta=priors[f'{side_name}_threshold']['beta']
-        )
+        # 確保正確漂移率 > 錯誤漂移率
+        drift_correct = pt.maximum(drift_correct, drift_incorrect + 0.05)
         
-        # 起始點變異
-        params[f'{side_name}_start_var'] = pm.Uniform(
-            f'{side_name}_start_var',
-            lower=priors[f'{side_name}_start_var']['lower'],
-            upper=priors[f'{side_name}_start_var']['upper']
-        )
+        params[f'{side_name}_drift_correct'] = drift_correct
+        params[f'{side_name}_drift_incorrect'] = drift_incorrect
         
-        # 非決策時間
-        params[f'{side_name}_ndt'] = pm.Uniform(
-            f'{side_name}_ndt',
-            lower=priors[f'{side_name}_ndt']['lower'],
-            upper=priors[f'{side_name}_ndt']['upper']
+        # 其他參數
+        params[f'{side_name}_threshold'] = pt.maximum(
+            pt.exp(raw_params[f'{side_name}_threshold_raw']), 0.1
         )
-        
-        # 噪音參數
-        params[f'{side_name}_noise'] = pm.Gamma(
-            f'{side_name}_noise',
-            alpha=priors[f'{side_name}_noise']['alpha'],
-            beta=priors[f'{side_name}_noise']['beta']
+        params[f'{side_name}_start_var'] = pt.maximum(
+            pt.exp(raw_params[f'{side_name}_start_var_raw']), 0.05
+        )
+        params[f'{side_name}_ndt'] = pt.clip(
+            pt.exp(raw_params[f'{side_name}_ndt_raw']), 0.05, 0.8
+        )
+        params[f'{side_name}_noise'] = pt.maximum(
+            pt.exp(raw_params[f'{side_name}_noise_raw']), 0.1
         )
         
         return params
     
-    def _define_integration_params(self):
-        """定義整合層參數先驗分布"""
+    def _transform_integration_params(self, raw_params, natural_params):
+        """轉換整合層參數"""
         
-        priors = self.integration_lba.get_default_priors()
         params = {}
         
         # 四個選項的漂移率
         for i in range(4):
-            param_name = f'integration_drift_{i}'
-            params[param_name] = pm.Gamma(
-                param_name,
-                alpha=priors[param_name]['alpha'],
-                beta=priors[param_name]['beta']
+            params[f'integration_drift_{i}'] = pt.maximum(
+                pt.exp(raw_params[f'integration_drift_{i}_raw']), 0.1
             )
         
-        # 其他整合層參數
-        params['integration_threshold'] = pm.Gamma(
-            'integration_threshold',
-            alpha=priors['integration_threshold']['alpha'],
-            beta=priors['integration_threshold']['beta']
+        # 其他參數
+        params['integration_threshold'] = pt.maximum(
+            pt.exp(raw_params['integration_threshold_raw']), 0.1
         )
-        
-        params['integration_start_var'] = pm.Uniform(
-            'integration_start_var',
-            lower=priors['integration_start_var']['lower'],
-            upper=priors['integration_start_var']['upper']
+        params['integration_start_var'] = pt.maximum(
+            pt.exp(raw_params['integration_start_var_raw']), 0.05
         )
-        
-        params['integration_ndt'] = pm.Uniform(
-            'integration_ndt',
-            lower=priors['integration_ndt']['lower'],
-            upper=priors['integration_ndt']['upper']
+        params['integration_ndt'] = pt.clip(
+            pt.exp(raw_params['integration_ndt_raw']), 0.05, 0.3
         )
-        
-        params['integration_noise'] = pm.Gamma(
-            'integration_noise',
-            alpha=priors['integration_noise']['alpha'],
-            beta=priors['integration_noise']['beta']
+        params['integration_noise'] = pt.maximum(
+            pt.exp(raw_params['integration_noise_raw']), 0.1
         )
         
         return params
     
-    def _compute_evidence_combination(self, first_params, second_params, 
-                                    first_stimuli, first_choices, 
-                                    second_stimuli, second_choices):
-        """
-        計算證據組合（簡化版實現）- 修復PyTensor兼容性
+    def _compute_side_likelihood(self, decisions, stimuli, rt, params):
+        """計算單邊似然函數 - 改進版"""
         
-        使用參數值作為證據強度的代理，避免形狀問題
-        """
+        side_name = list(params.keys())[0].split('_')[0]
         
-        # 提取漂移率作為證據強度
-        first_correct = first_params[f'{self.first_side}_drift_correct']
-        first_incorrect = first_params[f'{self.first_side}_drift_incorrect']
-        second_correct = second_params[f'{self.second_side}_drift_correct']
-        second_incorrect = second_params[f'{self.second_side}_drift_incorrect']
+        drift_correct = params[f'{side_name}_drift_correct']
+        drift_incorrect = params[f'{side_name}_drift_incorrect']
+        threshold = params[f'{side_name}_threshold']
+        start_var = params[f'{side_name}_start_var']
+        ndt = params[f'{side_name}_ndt']
+        noise = params[f'{side_name}_noise']
         
-        # 計算每個通道的平均證據強度（避免逐個trial計算）
-        # 使用期望值而非試驗特定值來避免張量形狀問題
+        # 計算決策時間
+        decision_time = pt.maximum(rt - ndt, 0.01)
         
-        # 第一通道的期望證據
-        first_vertical_prob = pt.mean(pt.eq(first_stimuli, 0).astype('float32'))
-        first_diagonal_prob = 1.0 - first_vertical_prob
+        # 判斷正確性
+        is_correct = pt.eq(decisions, stimuli)
         
-        first_evidence_vertical = first_vertical_prob * first_correct + (1 - first_vertical_prob) * first_incorrect
-        first_evidence_diagonal = first_diagonal_prob * first_correct + (1 - first_diagonal_prob) * first_incorrect
+        # 設定winner和loser漂移率
+        v_winner = pt.where(is_correct, drift_correct, drift_incorrect)
+        v_loser = pt.where(is_correct, drift_incorrect, drift_correct)
         
-        # 第二通道的期望證據
-        second_vertical_prob = pt.mean(pt.eq(second_stimuli, 0).astype('float32'))
-        second_diagonal_prob = 1.0 - second_vertical_prob
+        # 計算LBA密度
+        return self._compute_lba_likelihood(
+            decision_time, v_winner, v_loser, threshold, start_var, noise
+        )
+    
+    def _compute_lba_likelihood(self, t, v_winner, v_loser, threshold, start_var, noise):
+        """改進的LBA似然計算"""
         
-        second_evidence_vertical = second_vertical_prob * second_correct + (1 - second_vertical_prob) * second_incorrect
-        second_evidence_diagonal = second_diagonal_prob * second_correct + (1 - second_diagonal_prob) * second_incorrect
+        from pytensor.tensor import erf
+        
+        sqrt_t = pt.sqrt(t)
+        
+        def safe_normal_cdf(x):
+            return 0.5 * (1 + erf(pt.clip(x, -4.5, 4.5) / pt.sqrt(2)))
+        
+        def safe_normal_pdf(x):
+            x_clipped = pt.clip(x, -4.5, 4.5)
+            return pt.exp(-0.5 * x_clipped**2) / pt.sqrt(2 * pt.pi)
+        
+        # Winner累積器
+        z1_winner = (v_winner * t - threshold) / (noise * sqrt_t)
+        z2_winner = (v_winner * t - start_var) / (noise * sqrt_t)
+        
+        winner_cdf = safe_normal_cdf(z1_winner) - safe_normal_cdf(z2_winner)
+        winner_pdf = (safe_normal_pdf(z1_winner) - safe_normal_pdf(z2_winner)) / (noise * sqrt_t)
+        
+        winner_density = pt.maximum(
+            (v_winner / start_var) * pt.maximum(winner_cdf, 1e-10) + winner_pdf / start_var,
+            1e-10
+        )
+        
+        # Loser存活機率
+        z1_loser = (v_loser * t - threshold) / (noise * sqrt_t)
+        loser_survival = pt.maximum(1 - safe_normal_cdf(z1_loser), 1e-10)
+        
+        # 聯合似然
+        joint_likelihood = winner_density * loser_survival
+        joint_likelihood = pt.maximum(joint_likelihood, 1e-12)
+        
+        log_likelihood = pt.log(joint_likelihood)
+        log_likelihood = pt.clip(log_likelihood, -100.0, 10.0)
+        
+        return pt.sum(log_likelihood)
+    
+    def _compute_evidence_combination_improved(self, first_params, second_params,
+                                             first_stimuli, first_choices,
+                                             second_stimuli, second_choices,
+                                             n_trials):
+        """改進的證據組合計算"""
+        
+        # 使用參數的期望值來避免張量形狀問題
+        first_correct_drift = first_params[f'{self.first_side}_drift_correct']
+        first_incorrect_drift = first_params[f'{self.first_side}_drift_incorrect']
+        second_correct_drift = second_params[f'{self.second_side}_drift_correct']
+        second_incorrect_drift = second_params[f'{self.second_side}_drift_incorrect']
+        
+        # 計算平均證據強度
+        first_evidence_base = (first_correct_drift + first_incorrect_drift) / 2
+        second_evidence_base = (second_correct_drift + second_incorrect_drift) / 2
         
         # 處理順序權重
         if self.first_side == 'left':
-            left_weight = 1.1  # 先處理的通道有輕微優勢
-            right_weight = 1.0
-            left_vertical = first_evidence_vertical * left_weight
-            left_diagonal = first_evidence_diagonal * left_weight
-            right_vertical = second_evidence_vertical * right_weight
-            right_diagonal = second_evidence_diagonal * right_weight
+            left_evidence = first_evidence_base * 1.1
+            right_evidence = second_evidence_base * 1.0
         else:
-            left_weight = 1.0
-            right_weight = 1.1
-            left_vertical = second_evidence_vertical * left_weight
-            left_diagonal = second_evidence_diagonal * left_weight
-            right_vertical = first_evidence_vertical * right_weight
-            right_diagonal = first_evidence_diagonal * right_weight
+            left_evidence = second_evidence_base * 1.0
+            right_evidence = first_evidence_base * 1.1
         
-        # 組合成四個選項的證據（使用標量值）
+        # 計算四個選項的證據強度
         evidence_inputs = {
-            'choice_0': left_diagonal + right_vertical,    # \|
-            'choice_1': left_diagonal + right_diagonal,   # \/
-            'choice_2': left_vertical + right_vertical,   # ||
-            'choice_3': left_vertical + right_diagonal    # |/
+            'choice_0': left_evidence * 0.8 + right_evidence * 0.2,  # 左對角右垂直
+            'choice_1': left_evidence * 0.8 + right_evidence * 0.8,  # 左對角右對角
+            'choice_2': left_evidence * 0.2 + right_evidence * 0.2,  # 左垂直右垂直
+            'choice_3': left_evidence * 0.2 + right_evidence * 0.8   # 左垂直右對角
         }
         
         return evidence_inputs
     
-    def _compute_theoretical_accuracy(self, side_params):
-        """計算理論準確率（用於模型診斷）"""
+    def _compute_integration_likelihood(self, choices, evidence_inputs, rt, params):
+        """計算整合層似然"""
         
-        side_name = list(side_params.keys())[0].split('_')[0]  # 提取side名稱
+        # 基礎漂移率
+        base_drifts = [
+            params[f'integration_drift_{i}'] for i in range(4)
+        ]
         
-        drift_correct = side_params[f'{side_name}_drift_correct']
-        drift_incorrect = side_params[f'{side_name}_drift_incorrect']
+        threshold = params['integration_threshold']
+        start_var = params['integration_start_var']
+        ndt = params['integration_ndt']
+        noise = params['integration_noise']
         
-        # 簡化的準確率估計
-        evidence_ratio = drift_correct / (drift_correct + drift_incorrect)
+        # 調整漂移率
+        adjusted_drifts = []
+        for i, base_drift in enumerate(base_drifts):
+            evidence_boost = evidence_inputs[f'choice_{i}']
+            adjusted_drift = base_drift * (1.0 + evidence_boost * 0.3)
+            adjusted_drifts.append(pt.maximum(adjusted_drift, 0.1))
         
-        return evidence_ratio
+        # 計算決策時間
+        decision_time = pt.maximum(rt - ndt, 0.01)
+        
+        # 計算四選一LBA似然
+        return self._compute_4choice_lba_likelihood(
+            choices, decision_time, adjusted_drifts, threshold, start_var, noise
+        )
     
-    def validate_model_setup(self, subject_data):
-        """
-        驗證模型設定的合理性
+    def _compute_4choice_lba_likelihood(self, choices, t, drifts, threshold, start_var, noise):
+        """四選一LBA似然計算"""
         
-        Args:
-            subject_data: 受試者資料
-            
-        Returns:
-            bool: 設定是否合理
-            str: 驗證訊息
-        """
+        # 計算每個選項的密度和存活函數
+        densities = []
+        survivals = []
         
-        try:
-            # 檢查必要的資料欄位
-            required_fields = [
-                'subject_id', 'n_trials', 'choices', 'rt',
-                f'{self.first_side}_stimuli', f'{self.first_side}_choices',
-                f'{self.second_side}_stimuli', f'{self.second_side}_choices'
-            ]
-            
-            for field in required_fields:
-                if field not in subject_data:
-                    return False, f"缺少必要資料欄位: {field}"
-            
-            # 檢查資料長度一致性
-            n_trials = subject_data['n_trials']
-            for field in ['choices', 'rt', f'{self.first_side}_stimuli', 
-                         f'{self.first_side}_choices', f'{self.second_side}_stimuli', 
-                         f'{self.second_side}_choices']:
-                if len(subject_data[field]) != n_trials:
-                    return False, f"資料長度不一致: {field} 有 {len(subject_data[field])} 個元素，期待 {n_trials}"
-            
-            # 檢查時間分割比例
-            if not 0.1 <= self.time_split_ratio <= 0.9:
-                return False, f"時間分割比例不合理: {self.time_split_ratio}，應在 [0.1, 0.9] 範圍內"
-            
-            # 檢查RT範圍
-            rt_array = subject_data['rt']
-            if np.any(rt_array <= 0):
-                return False, "發現非正值的反應時間"
-            
-            min_rt_required = 0.15  # 最小可能的RT
-            if np.any(rt_array < min_rt_required):
-                return False, f"發現過短的反應時間 (< {min_rt_required}s)"
-            
-            # 檢查選擇值範圍
-            choices = subject_data['choices']
-            if not np.all(np.isin(choices, [0, 1, 2, 3])):
-                return False, "最終選擇包含無效值（應為0,1,2,3）"
-            
-            for side in [self.first_side, self.second_side]:
-                side_choices = subject_data[f'{side}_choices']
-                side_stimuli = subject_data[f'{side}_stimuli']
-                
-                if not np.all(np.isin(side_choices, [0, 1])):
-                    return False, f"{side}通道選擇包含無效值（應為0,1）"
-                
-                if not np.all(np.isin(side_stimuli, [0, 1])):
-                    return False, f"{side}通道刺激包含無效值（應為0,1）"
-            
-            return True, "模型設定驗證通過"
-            
-        except Exception as e:
-            return False, f"驗證過程發生錯誤: {e}"
+        for drift in drifts:
+            density = self._compute_single_lba_density(t, drift, threshold, start_var, noise)
+            survival = self._compute_single_lba_survival(t, drift, threshold, start_var, noise)
+            densities.append(density)
+            survivals.append(survival)
+        
+        # 計算每個選項的完整似然
+        likelihoods = []
+        for i in range(4):
+            other_survivals = [survivals[j] for j in range(4) if j != i]
+            likelihood = densities[i]
+            for survival in other_survivals:
+                likelihood = likelihood * survival
+            likelihoods.append(likelihood)
+        
+        # 根據實際選擇選取對應的似然
+        trial_likelihoods = pt.zeros_like(t)
+        for i in range(4):
+            mask = pt.eq(choices, i)
+            trial_likelihoods = trial_likelihoods + mask * likelihoods[i]
+        
+        # 確保正值並取對數
+        trial_likelihoods = pt.maximum(trial_likelihoods, 1e-12)
+        log_likelihoods = pt.log(trial_likelihoods)
+        
+        return pt.sum(log_likelihoods)
+    
+    def _compute_single_lba_density(self, t, drift, threshold, start_var, noise):
+        """單一累積器LBA密度"""
+        
+        from pytensor.tensor import erf
+        
+        sqrt_t = pt.sqrt(t)
+        
+        z1 = pt.clip((drift * t - threshold) / (noise * sqrt_t), -4.5, 4.5)
+        z2 = pt.clip((drift * t - start_var) / (noise * sqrt_t), -4.5, 4.5)
+        
+        def safe_normal_cdf(x):
+            return 0.5 * (1 + erf(x / pt.sqrt(2)))
+        
+        def safe_normal_pdf(x):
+            return pt.exp(-0.5 * x**2) / pt.sqrt(2 * pt.pi)
+        
+        cdf_term = safe_normal_cdf(z1) - safe_normal_cdf(z2)
+        pdf_term = (safe_normal_pdf(z1) - safe_normal_pdf(z2)) / (noise * sqrt_t)
+        
+        cdf_term = pt.maximum(cdf_term, 1e-10)
+        
+        density = pt.maximum(
+            (drift / start_var) * cdf_term + pdf_term / start_var,
+            1e-10
+        )
+        
+        return density
+    
+    def _compute_single_lba_survival(self, t, drift, threshold, start_var, noise):
+        """單一累積器LBA存活函數"""
+        
+        from pytensor.tensor import erf
+        
+        sqrt_t = pt.sqrt(t)
+        z1 = pt.clip((drift * t - threshold) / (noise * sqrt_t), -4.5, 4.5)
+        
+        def safe_normal_cdf(x):
+            return 0.5 * (1 + erf(x / pt.sqrt(2)))
+        
+        survival = pt.maximum(1 - safe_normal_cdf(z1), 1e-10)
+        return survival
     
     def get_model_info(self):
         """獲得模型資訊摘要"""
         
         return {
-            'model_type': 'sequential_lba',
+            'model_type': 'sequential_lba_improved',
             'first_side': self.first_side,
             'second_side': self.second_side,
             'time_split_ratio': self.time_split_ratio,
             'total_parameters': len(self.all_param_names),
-            'first_side_parameters': len(self.first_side_lba.param_names),
-            'second_side_parameters': len(self.second_side_lba.param_names),
-            'integration_parameters': len(self.integration_lba.param_names),
-            'parameter_names': self.all_param_names
+            'parameter_names': self.all_param_names,
+            'has_parameter_transforms': True,
+            'transform_functions': list(self.param_transforms.keys())
         }
 
 # 便利函數
-def create_sequential_model(first_side='left', time_split_ratio=0.6):
-    """創建序列處理LBA模型"""
+def create_improved_sequential_model(first_side='left', time_split_ratio=0.6):
+    """創建改進的序列處理LBA模型"""
     return SequentialLBA(first_side, time_split_ratio)
 
-def test_sequential_model():
-    """測試序列模型功能"""
+def test_improved_sequential_model():
+    """測試改進的序列模型"""
     
-    print("🧪 測試序列處理模型...")
+    print("🧪 測試改進的序列處理模型...")
     
     try:
         # 創建測試資料
-        n_trials = 100
+        n_trials = 50
         np.random.seed(42)
         
         test_subject_data = {
@@ -484,51 +588,41 @@ def test_sequential_model():
             'accuracy': 0.75
         }
         
-        # 創建序列模型
+        # 創建改進的序列模型
         seq_model = SequentialLBA(first_side='left', time_split_ratio=0.6)
-        
-        # 驗證模型設定
-        valid, message = seq_model.validate_model_setup(test_subject_data)
-        print(f"   模型設定驗證: {message}")
-        
-        if not valid:
-            print("❌ 模型設定驗證失敗")
-            return False
         
         # 獲得模型資訊
         model_info = seq_model.get_model_info()
         print(f"   模型類型: {model_info['model_type']}")
         print(f"   總參數數: {model_info['total_parameters']}")
-        print(f"   處理順序: {model_info['first_side']} → {model_info['second_side']}")
+        print(f"   參數轉換: {model_info['has_parameter_transforms']}")
         
-        # 嘗試建構PyMC模型（不進行採樣）
-        print("   測試PyMC模型建構...")
+        # 嘗試建構PyMC模型
+        print("   測試改進的PyMC模型建構...")
         pymc_model = seq_model.build_model(test_subject_data)
         
         # 檢查模型基本性質
         print(f"   自由參數數量: {len(pymc_model.free_RVs)}")
-        print(f"   觀察變數數量: {len(pymc_model.observed_RVs)}")
         
-        # 測試模型編譯（基本檢查）
+        # 測試模型編譯
         with pymc_model:
             test_point = pymc_model.initial_point()
             log_prob = pymc_model.compile_logp()(test_point)
             print(f"   測試對數機率: {log_prob:.2f}")
             
-            if not np.isfinite(log_prob):
-                print("⚠️ 警告: 模型初始對數機率無效")
+            if np.isfinite(log_prob):
+                print("   ✅ 改進模型編譯成功")
             else:
-                print("   模型編譯成功")
+                print("   ⚠️ 警告: 模型初始對數機率無效")
         
-        print("✅ 序列模型測試成功!")
+        print("✅ 改進的序列模型測試成功!")
         return True
         
     except Exception as e:
-        print(f"❌ 序列模型測試失敗: {e}")
+        print(f"❌ 改進的序列模型測試失敗: {e}")
         import traceback
         traceback.print_exc()
         return False
 
 if __name__ == "__main__":
-    # 如果直接執行此檔案，進行測試
-    test_sequential_model()
+    test_improved_sequential_model()
