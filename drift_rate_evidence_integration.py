@@ -1,4 +1,49 @@
-# drift_rate_evidence_integration.py - 基於Single LBA的證據整合模型比較
+def diagnose_sampling_issues(trace, verbose=True):
+    """
+    診斷採樣問題 (內建版本，不依賴外部模組)
+    """
+    
+    issues = []
+    
+    try:
+        # 檢查發散樣本
+        if hasattr(trace, 'sample_stats'):
+            divergences = trace.sample_stats.diverging.sum().values
+            if divergences > 0:
+                issues.append(f"發散樣本: {divergences}")
+        
+        # 檢查 R-hat
+        try:
+            rhat = az.rhat(trace)
+            max_rhat = float(rhat.to_array().max())
+            if max_rhat > 1.1:
+                issues.append(f"R-hat 過高: {max_rhat:.3f}")
+        except:
+            issues.append("R-hat 計算失敗")
+        
+        # 檢查有效樣本數
+        try:
+            ess = az.ess(trace)
+            min_ess = float(ess.to_array().min())
+            if min_ess < 100:
+                issues.append(f"ESS 過低: {min_ess:.0f}")
+        except:
+            issues.append("ESS 計算失敗")
+        
+        if verbose:
+            if issues:
+                print("⚠️ 發現採樣問題:")
+                for issue in issues:
+                    print(f"   - {issue}")
+            else:
+                print("✅ 採樣診斷通過")
+        
+        return issues
+        
+    except Exception as e:
+        if verbose:
+            print(f"❌ 診斷失敗: {e}")
+        return [f"診斷失敗: {e}"]# drift_rate_evidence_integration.py - 基於Single LBA的證據整合模型比較
 # 使用Bayes Factor比較Coactive vs Parallel AND假設
 
 import numpy as np
@@ -8,8 +53,6 @@ import arviz as az
 import time
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-from data_utils import DataProcessor
-from grt_model_comparison import get_robust_mcmc_config, diagnose_sampling_issues
 
 class EvidenceIntegrationComparison:
     """基於Single LBA的證據整合模型比較器"""
@@ -35,12 +78,12 @@ class EvidenceIntegrationComparison:
         """設定MCMC配置"""
         
         default_config = {
-            'draws': 500,
-            'tune': 500,
+            'draws': 200,           # 減少採樣數
+            'tune': 300,            # 減少調整期
             'chains': 2,
             'cores': 1,
-            'target_accept': 0.90,
-            'max_treedepth': 10,
+            'target_accept': 0.95,
+            'max_treedepth': 12,    # 增加樹深度
             'init': 'jitter+adapt_diag',
             'random_seed': 42,
             'progressbar': True,
@@ -129,6 +172,7 @@ class EvidenceIntegrationComparison:
     def step1_estimate_single_lba(self, subject_data):
         """
         步驟1: 使用Single LBA估計左右通道的drift rate
+        共享 threshold, start_var, ndt, noise 參數
         """
         
         print("\n📍 步驟1: Single LBA估計左右通道drift rate")
@@ -136,21 +180,19 @@ class EvidenceIntegrationComparison:
         
         with pm.Model() as single_lba_model:
             
-            # === 左通道LBA模型 ===
+            # === 共享參數 (左右通道共用) ===
+            shared_threshold = pm.Gamma('shared_threshold', alpha=3.0, beta=3.5)
+            shared_start_var = pm.Uniform('shared_start_var', lower=0.1, upper=0.7)
+            shared_ndt = pm.Uniform('shared_ndt', lower=0.05, upper=0.6)
+            shared_noise = pm.Gamma('shared_noise', alpha=2.5, beta=8.0)
+            
+            # === 左通道獨立的drift rate參數 ===
             left_drift_correct = pm.Gamma('left_drift_correct', alpha=2.5, beta=1.2)
             left_drift_incorrect = pm.Gamma('left_drift_incorrect', alpha=2.0, beta=3.0)
-            left_threshold = pm.Gamma('left_threshold', alpha=3.0, beta=3.5)
-            left_start_var = pm.Uniform('left_start_var', lower=0.1, upper=0.7)
-            left_ndt = pm.Uniform('left_ndt', lower=0.05, upper=0.6)
-            left_noise = pm.Gamma('left_noise', alpha=2.5, beta=8.0)
             
-            # === 右通道LBA模型 ===
+            # === 右通道獨立的drift rate參數 ===
             right_drift_correct = pm.Gamma('right_drift_correct', alpha=2.5, beta=1.2)
             right_drift_incorrect = pm.Gamma('right_drift_incorrect', alpha=2.0, beta=3.0)
-            right_threshold = pm.Gamma('right_threshold', alpha=3.0, beta=3.5)
-            right_start_var = pm.Uniform('right_start_var', lower=0.1, upper=0.7)
-            right_ndt = pm.Uniform('right_ndt', lower=0.05, upper=0.6)
-            right_noise = pm.Gamma('right_noise', alpha=2.5, beta=8.0)
             
             # === 數據準備 ===
             left_stimuli = subject_data['left_stimuli']
@@ -159,18 +201,18 @@ class EvidenceIntegrationComparison:
             right_choices = subject_data['right_choices']
             rt = subject_data['rt']
             
-            # === 計算left通道likelihood ===
+            # === 計算left通道likelihood (使用共享參數) ===
             left_likelihood = self._compute_side_likelihood(
                 left_choices, left_stimuli, rt,
-                left_drift_correct, left_drift_incorrect, left_threshold,
-                left_start_var, left_ndt, left_noise, 'left'
+                left_drift_correct, left_drift_incorrect, shared_threshold,
+                shared_start_var, shared_ndt, shared_noise, 'left'
             )
             
-            # === 計算right通道likelihood ===
+            # === 計算right通道likelihood (使用共享參數) ===
             right_likelihood = self._compute_side_likelihood(
                 right_choices, right_stimuli, rt,
-                right_drift_correct, right_drift_incorrect, right_threshold,
-                right_start_var, right_ndt, right_noise, 'right'
+                right_drift_correct, right_drift_incorrect, shared_threshold,
+                shared_start_var, shared_ndt, shared_noise, 'right'
             )
             
             # === 添加到模型 ===
@@ -202,56 +244,64 @@ class EvidenceIntegrationComparison:
         print("\n📍 步驟2: 測試證據整合假設")
         print("-" * 50)
         
+        # 首先從數據估計視覺特徵的處理難度係數
+        difficulty_coefficients = self._estimate_visual_difficulty_coefficients(subject_data, drift_estimates)
+        
         # 2A. Coactive模型
         print("   🔬 測試 Coactive 假設 (證據相加)...")
-        coactive_model, coactive_trace = self._create_coactive_integration_model(subject_data, drift_estimates)
+        coactive_model, coactive_trace = self._create_coactive_integration_model(
+            subject_data, drift_estimates, difficulty_coefficients)
         
         # 2B. Parallel AND模型  
         print("   🔬 測試 Parallel AND 假設 (證據取最大值)...")
-        parallel_and_model, parallel_and_trace = self._create_parallel_and_integration_model(subject_data, drift_estimates)
+        parallel_and_model, parallel_and_trace = self._create_parallel_and_integration_model(
+            subject_data, drift_estimates, difficulty_coefficients)
         
         return {
             'coactive_model': coactive_model,
             'coactive_trace': coactive_trace,
             'parallel_and_model': parallel_and_model,
-            'parallel_and_trace': parallel_and_trace
+            'parallel_and_trace': parallel_and_trace,
+            'difficulty_coefficients': difficulty_coefficients
         }
     
-    def _create_coactive_integration_model(self, subject_data, drift_estimates):
+    def _create_coactive_integration_model(self, subject_data, drift_estimates, difficulty_coefficients):
         """創建Coactive證據整合模型"""
         
         with pm.Model() as coactive_model:
             
-            # === 使用估計的drift rate作為固定值或先驗 ===
-            # 這裡我們使用估計的均值作為先驗的中心
-            left_drift_mean = drift_estimates['left_drift_mean']
-            right_drift_mean = drift_estimates['right_drift_mean']
+            # === 使用估計的左右通道drift rate (固定值) ===
+            left_drift = drift_estimates['left_drift_mean']   # 左通道的drift rate
+            right_drift = drift_estimates['right_drift_mean'] # 右通道的drift rate
             
-            # 四選一決策的參數
-            choice_threshold = pm.Gamma('coactive_choice_threshold', alpha=2.0, beta=2.0)
-            choice_ndt = pm.Uniform('coactive_choice_ndt', lower=0.05, upper=0.3)
-            choice_noise = pm.Gamma('coactive_choice_noise', alpha=2.0, beta=5.0)
+            print(f"     使用估計的drift rate: 左={left_drift:.3f}, 右={right_drift:.3f}")
             
-            # === 根據四選一選擇計算組合drift rate ===
+            # === 固定的四選一決策參數 ===
+            choice_threshold = 1.0    # 固定閾值
+            choice_ndt = 0.2          # 固定非決策時間
+            choice_noise = 0.3        # 固定噪音
+            
+            # === 計算Coactive假設下的四選一drift rates ===
             choices = subject_data['choices']
             rt = subject_data['rt']
             
-            # 對每個選擇，計算對應的Coactive drift rate
-            # 選擇 0: 左對角右垂直 -> 左diagonal + 右vertical
-            # 選擇 1: 左對角右對角 -> 左diagonal + 右diagonal  
-            # 選擇 2: 左垂直右垂直 -> 左vertical + 右vertical
-            # 選擇 3: 左垂直右對角 -> 左vertical + 右diagonal
+            # 根據Coactive假設和數據驅動的難度係數計算每個選項的drift rate
+            coactive_drift_rates = self._compute_coactive_choice_drifts(
+                left_drift, right_drift, difficulty_coefficients)
             
-            coactive_drifts = self._compute_coactive_drift_rates(
-                choices, left_drift_mean, right_drift_mean
-            )
+            print(f"     Coactive drift rates: {coactive_drift_rates}")
             
-            # === 計算四選一LBA likelihood ===
-            coactive_likelihood = self._compute_choice_likelihood(
-                choices, rt, coactive_drifts, choice_threshold, choice_ndt, choice_noise
+            # === 計算四選一選擇的likelihood ===
+            coactive_likelihood = self._compute_four_choice_likelihood(
+                choices, rt, coactive_drift_rates, choice_threshold, choice_ndt, choice_noise
             )
             
             pm.Potential('coactive_likelihood', coactive_likelihood)
+            
+            # 添加觀察模型以便計算WAIC
+            trial_drift_rates = coactive_drift_rates[choices]  # 每個trial對應的drift rate
+            predicted_rt = choice_ndt + choice_threshold / trial_drift_rates
+            pm.Normal('coactive_obs_rt', mu=predicted_rt, sigma=choice_noise, observed=rt)
         
         # 執行採樣
         with coactive_model:
@@ -265,35 +315,43 @@ class EvidenceIntegrationComparison:
         
         return coactive_model, coactive_trace
     
-    def _create_parallel_and_integration_model(self, subject_data, drift_estimates):
+    def _create_parallel_and_integration_model(self, subject_data, drift_estimates, difficulty_coefficients):
         """創建Parallel AND證據整合模型"""
         
         with pm.Model() as parallel_and_model:
             
-            # === 使用估計的drift rate ===
-            left_drift_mean = drift_estimates['left_drift_mean']
-            right_drift_mean = drift_estimates['right_drift_mean']
+            # === 使用估計的左右通道drift rate (固定值) ===
+            left_drift = drift_estimates['left_drift_mean']   # 左通道的drift rate
+            right_drift = drift_estimates['right_drift_mean'] # 右通道的drift rate
             
-            # 四選一決策的參數
-            choice_threshold = pm.Gamma('parallel_choice_threshold', alpha=2.0, beta=2.0)
-            choice_ndt = pm.Uniform('parallel_choice_ndt', lower=0.05, upper=0.3)
-            choice_noise = pm.Gamma('parallel_choice_noise', alpha=2.0, beta=5.0)
+            print(f"     使用估計的drift rate: 左={left_drift:.3f}, 右={right_drift:.3f}")
             
-            # === 根據四選一選擇計算組合drift rate ===
+            # === 固定的四選一決策參數 ===
+            choice_threshold = 1.0    # 固定閾值
+            choice_ndt = 0.2          # 固定非決策時間
+            choice_noise = 0.3        # 固定噪音
+            
+            # === 計算Parallel AND假設下的四選一drift rates ===
             choices = subject_data['choices']
             rt = subject_data['rt']
             
-            # Parallel AND: 取最大值
-            parallel_drifts = self._compute_parallel_and_drift_rates(
-                choices, left_drift_mean, right_drift_mean
-            )
+            # 根據Parallel AND假設和數據驅動的難度係數計算每個選項的drift rate
+            parallel_drift_rates = self._compute_parallel_and_choice_drifts(
+                left_drift, right_drift, difficulty_coefficients)
             
-            # === 計算四選一LBA likelihood ===
-            parallel_likelihood = self._compute_choice_likelihood(
-                choices, rt, parallel_drifts, choice_threshold, choice_ndt, choice_noise
+            print(f"     Parallel AND drift rates: {parallel_drift_rates}")
+            
+            # === 計算四選一選擇的likelihood ===
+            parallel_likelihood = self._compute_four_choice_likelihood(
+                choices, rt, parallel_drift_rates, choice_threshold, choice_ndt, choice_noise
             )
             
             pm.Potential('parallel_likelihood', parallel_likelihood)
+            
+            # 添加觀察模型以便計算WAIC
+            trial_drift_rates = parallel_drift_rates[choices]  # 每個trial對應的drift rate
+            predicted_rt = choice_ndt + choice_threshold / trial_drift_rates
+            pm.Normal('parallel_obs_rt', mu=predicted_rt, sigma=choice_noise, observed=rt)
         
         # 執行採樣
         with parallel_and_model:
@@ -307,108 +365,208 @@ class EvidenceIntegrationComparison:
         
         return parallel_and_model, parallel_trace
     
-    def _compute_coactive_drift_rates(self, choices, left_drift_mean, right_drift_mean):
+    def _compute_coactive_choice_drifts(self, left_drift, right_drift, difficulty_coefficients):
         """
-        計算Coactive假設下的drift rate (相加)
+        計算Coactive假設下四個選項的drift rates
+        使用從數據估計的視覺特徵處理難度係數
+        
+        選項對應:
+        0: 左\右| (左對角 + 右垂直)
+        1: 左\右/ (左對角 + 右對角)  
+        2: 左|右| (左垂直 + 右垂直)
+        3: 左|右/ (左垂直 + 右對角)
+        
+        Coactive假設: 兩個通道的處理能力相加
         """
         
-        # 簡化假設：每個通道對垂直線和對角線有不同的敏感度
-        left_vertical_strength = left_drift_mean * 0.8    # 左通道對垂直線的強度
-        left_diagonal_strength = left_drift_mean * 1.2    # 左通道對對角線的強度
-        right_vertical_strength = right_drift_mean * 0.8  # 右通道對垂直線的強度
-        right_diagonal_strength = right_drift_mean * 1.2  # 右通道對對角線的強度
+        # 提取數據驅動的難度係數
+        left_vertical_coeff = difficulty_coefficients['left_vertical']
+        left_diagonal_coeff = difficulty_coefficients['left_diagonal']
+        right_vertical_coeff = difficulty_coefficients['right_vertical']
+        right_diagonal_coeff = difficulty_coefficients['right_diagonal']
         
-        # 為每個選擇計算Coactive drift rate
-        drift_choice_0 = left_diagonal_strength + right_vertical_strength    # 左\右|
-        drift_choice_1 = left_diagonal_strength + right_diagonal_strength   # 左\右/
-        drift_choice_2 = left_vertical_strength + right_vertical_strength   # 左|右|
-        drift_choice_3 = left_vertical_strength + right_diagonal_strength   # 左|右/
+        # 計算每個通道對不同視覺特徵的有效處理能力
+        left_vertical_strength = left_drift * left_vertical_coeff
+        left_diagonal_strength = left_drift * left_diagonal_coeff
+        right_vertical_strength = right_drift * right_vertical_coeff
+        right_diagonal_strength = right_drift * right_diagonal_coeff
         
-        # 根據實際選擇分配drift rate
-        coactive_drifts = pm.math.switch(
-            pm.math.eq(choices, 0), drift_choice_0,
-            pm.math.switch(
-                pm.math.eq(choices, 1), drift_choice_1,
-                pm.math.switch(
-                    pm.math.eq(choices, 2), drift_choice_2,
-                    drift_choice_3
-                )
-            )
-        )
+        # Coactive: 相加 (兩個通道協同工作)
+        drift_rates = np.array([
+            left_diagonal_strength + right_vertical_strength,   # 選項0: 左\右|
+            left_diagonal_strength + right_diagonal_strength,   # 選項1: 左\右/
+            left_vertical_strength + right_vertical_strength,   # 選項2: 左|右|
+            left_vertical_strength + right_diagonal_strength    # 選項3: 左|右/
+        ])
         
-        return pm.math.maximum(coactive_drifts, 0.1)  # 確保正值
+        return drift_rates
     
-    def _compute_parallel_and_drift_rates(self, choices, left_drift_mean, right_drift_mean):
+    def _compute_parallel_and_choice_drifts(self, left_drift, right_drift, difficulty_coefficients):
         """
-        計算Parallel AND假設下的drift rate (取最大值)
+        計算Parallel AND假設下四個選項的drift rates
+        使用從數據估計的視覺特徵處理難度係數
+        
+        Parallel AND假設: 取最大值 (較快的通道決定整體速度)
         """
         
-        # 每個通道的強度
-        left_vertical_strength = left_drift_mean * 0.8
-        left_diagonal_strength = left_drift_mean * 1.2
-        right_vertical_strength = right_drift_mean * 0.8
-        right_diagonal_strength = right_drift_mean * 1.2
+        # 提取數據驅動的難度係數
+        left_vertical_coeff = difficulty_coefficients['left_vertical']
+        left_diagonal_coeff = difficulty_coefficients['left_diagonal']
+        right_vertical_coeff = difficulty_coefficients['right_vertical']
+        right_diagonal_coeff = difficulty_coefficients['right_diagonal']
         
-        # 為每個選擇計算Parallel AND drift rate (取最大值)
-        drift_choice_0 = pm.math.maximum(left_diagonal_strength, right_vertical_strength)    # 左\右|
-        drift_choice_1 = pm.math.maximum(left_diagonal_strength, right_diagonal_strength)   # 左\右/
-        drift_choice_2 = pm.math.maximum(left_vertical_strength, right_vertical_strength)   # 左|右|
-        drift_choice_3 = pm.math.maximum(left_vertical_strength, right_diagonal_strength)   # 左|右/
+        # 計算每個通道對不同視覺特徵的有效處理能力
+        left_vertical_strength = left_drift * left_vertical_coeff
+        left_diagonal_strength = left_drift * left_diagonal_coeff
+        right_vertical_strength = right_drift * right_vertical_coeff
+        right_diagonal_strength = right_drift * right_diagonal_coeff
         
-        # 根據實際選擇分配drift rate
-        parallel_drifts = pm.math.switch(
-            pm.math.eq(choices, 0), drift_choice_0,
-            pm.math.switch(
-                pm.math.eq(choices, 1), drift_choice_1,
-                pm.math.switch(
-                    pm.math.eq(choices, 2), drift_choice_2,
-                    drift_choice_3
-                )
-            )
-        )
+        # Parallel AND: 取最大值 (最快的通道決定)
+        drift_rates = np.array([
+            max(left_diagonal_strength, right_vertical_strength),   # 選項0: 左\右|
+            max(left_diagonal_strength, right_diagonal_strength),   # 選項1: 左\右/
+            max(left_vertical_strength, right_vertical_strength),   # 選項2: 左|右|
+            max(left_vertical_strength, right_diagonal_strength)    # 選項3: 左|右/
+        ])
         
-        return pm.math.maximum(parallel_drifts, 0.1)  # 確保正值
+        return drift_rates
     
-    def _compute_choice_likelihood(self, choices, rt, drift_rates, threshold, ndt, noise):
+    def _compute_four_choice_likelihood(self, choices, rt, drift_rates, threshold, ndt, noise):
         """
         計算四選一選擇的likelihood
+        
+        Args:
+            choices: 選擇陣列 (0-3)
+            rt: 反應時間陣列
+            drift_rates: 四個選項的drift rates [drift_0, drift_1, drift_2, drift_3]
+            threshold, ndt, noise: LBA參數 (固定值)
         """
         
-        # 應用參數約束
-        drift_rates = pm.math.maximum(drift_rates, 0.1)
-        threshold = pm.math.maximum(threshold, 0.1)
-        ndt = pm.math.maximum(ndt, 0.05)
-        noise = pm.math.maximum(noise, 0.1)
+        # 為每個trial分配對應的drift rate
+        trial_drift_rates = drift_rates[choices]
         
         # 計算決策時間
-        decision_time = pm.math.maximum(rt - ndt, 0.01)
+        decision_time = np.maximum(rt - ndt, 0.01)
         
         # 簡化的LBA likelihood計算
-        # 這裡使用簡化的正態分佈近似
-        predicted_rt = threshold / drift_rates + ndt
+        # 假設每個選項都有相同的參數，只有drift rate不同
+        predicted_rt = ndt + threshold / trial_drift_rates
         
-        # RT likelihood
-        rt_likelihood = pm.math.sum(
-            -0.5 * ((rt - predicted_rt) / noise) ** 2 - pm.math.log(noise * pm.math.sqrt(2 * np.pi))
+        # 計算RT likelihood (使用正態分佈近似)
+        rt_likelihood = np.sum(
+            -0.5 * ((rt - predicted_rt) / noise) ** 2 - np.log(noise * np.sqrt(2 * np.pi))
         )
         
         return rt_likelihood
     
     def _extract_drift_estimates(self, trace):
-        """提取drift rate的後驗估計"""
+        """提取drift rate的後驗估計 (配合共享參數設計)"""
         
         summary = az.summary(trace)
         
+        # 提取基本drift rate參數
+        left_correct = summary.loc['left_drift_correct', 'mean']
+        left_incorrect = summary.loc['left_drift_incorrect', 'mean']
+        right_correct = summary.loc['right_drift_correct', 'mean']
+        right_incorrect = summary.loc['right_drift_incorrect', 'mean']
+        
         return {
-            'left_drift_mean': (summary.loc['left_drift_correct', 'mean'] + 
-                              summary.loc['left_drift_incorrect', 'mean']) / 2,
-            'right_drift_mean': (summary.loc['right_drift_correct', 'mean'] + 
-                               summary.loc['right_drift_incorrect', 'mean']) / 2,
-            'left_drift_correct': summary.loc['left_drift_correct', 'mean'],
-            'left_drift_incorrect': summary.loc['left_drift_incorrect', 'mean'],
-            'right_drift_correct': summary.loc['right_drift_correct', 'mean'],
-            'right_drift_incorrect': summary.loc['right_drift_incorrect', 'mean']
+            'left_drift_mean': (left_correct + left_incorrect) / 2,
+            'right_drift_mean': (right_correct + right_incorrect) / 2,
+            'left_drift_correct': left_correct,
+            'left_drift_incorrect': left_incorrect,
+            'right_drift_correct': right_correct,
+            'right_drift_incorrect': right_incorrect,
+            # 添加共享參數
+            'shared_threshold': summary.loc['shared_threshold', 'mean'],
+            'shared_start_var': summary.loc['shared_start_var', 'mean'],
+            'shared_ndt': summary.loc['shared_ndt', 'mean'],
+            'shared_noise': summary.loc['shared_noise', 'mean']
         }
+    
+    def _estimate_visual_difficulty_coefficients(self, subject_data, drift_estimates):
+        """
+        從數據估計垂直線 vs 對角線的相對處理難度係數
+        
+        方法: 分析單通道對不同視覺特徵的表現差異
+        """
+        
+        print("     🔍 從數據估計視覺特徵處理難度...")
+        
+        # 分析左通道對垂直線 vs 對角線的表現
+        left_stimuli = subject_data['left_stimuli']
+        left_choices = subject_data['left_choices']
+        left_correct = subject_data['left_correct']
+        
+        # 左通道：垂直線 (0) vs 對角線 (1) 的準確率
+        left_vertical_trials = left_stimuli == 0
+        left_diagonal_trials = left_stimuli == 1
+        
+        if np.sum(left_vertical_trials) > 0:
+            left_vertical_acc = np.mean(left_correct[left_vertical_trials])
+        else:
+            left_vertical_acc = 0.5
+            
+        if np.sum(left_diagonal_trials) > 0:
+            left_diagonal_acc = np.mean(left_correct[left_diagonal_trials])
+        else:
+            left_diagonal_acc = 0.5
+        
+        # 分析右通道對垂直線 vs 對角線的表現
+        right_stimuli = subject_data['right_stimuli']
+        right_choices = subject_data['right_choices']
+        right_correct = subject_data['right_correct']
+        
+        right_vertical_trials = right_stimuli == 0
+        right_diagonal_trials = right_stimuli == 1
+        
+        if np.sum(right_vertical_trials) > 0:
+            right_vertical_acc = np.mean(right_correct[right_vertical_trials])
+        else:
+            right_vertical_acc = 0.5
+            
+        if np.sum(right_diagonal_trials) > 0:
+            right_diagonal_acc = np.mean(right_correct[right_diagonal_trials])
+        else:
+            right_diagonal_acc = 0.5
+        
+        # 計算相對難度係數 (以垂直線為基準 = 1.0)
+        # 係數 = 該特徵準確率 / 垂直線準確率
+        
+        # 左通道係數
+        if left_vertical_acc > 0:
+            left_vertical_coeff = 1.0  # 基準
+            left_diagonal_coeff = left_diagonal_acc / left_vertical_acc
+        else:
+            left_vertical_coeff = 1.0
+            left_diagonal_coeff = 1.0
+        
+        # 右通道係數
+        if right_vertical_acc > 0:
+            right_vertical_coeff = 1.0  # 基準
+            right_diagonal_coeff = right_diagonal_acc / right_vertical_acc
+        else:
+            right_vertical_coeff = 1.0
+            right_diagonal_coeff = 1.0
+        
+        # 限制係數範圍，避免極端值
+        left_diagonal_coeff = np.clip(left_diagonal_coeff, 0.5, 1.5)
+        right_diagonal_coeff = np.clip(right_diagonal_coeff, 0.5, 1.5)
+        
+        coefficients = {
+            'left_vertical': left_vertical_coeff,
+            'left_diagonal': left_diagonal_coeff,
+            'right_vertical': right_vertical_coeff,
+            'right_diagonal': right_diagonal_coeff
+        }
+        
+        print(f"     📊 估計的難度係數:")
+        print(f"       左通道 - 垂直線: {left_vertical_coeff:.3f}, 對角線: {left_diagonal_coeff:.3f}")
+        print(f"       右通道 - 垂直線: {right_vertical_coeff:.3f}, 對角線: {right_diagonal_coeff:.3f}")
+        print(f"       左通道準確率 - 垂直線: {left_vertical_acc:.1%}, 對角線: {left_diagonal_acc:.1%}")
+        print(f"       右通道準確率 - 垂直線: {right_vertical_acc:.1%}, 對角線: {right_diagonal_acc:.1%}")
+        
+        return coefficients
     
     def _compute_side_likelihood(self, decisions, stimuli, rt, drift_correct, drift_incorrect, 
                                threshold, start_var, ndt, noise, side_name):
@@ -445,6 +603,10 @@ class EvidenceIntegrationComparison:
         # 設定winner和loser的漂移率
         v_winner = pm.math.where(stimulus_correct, drift_correct, drift_incorrect)
         v_loser = pm.math.where(stimulus_correct, drift_incorrect, drift_correct)
+        
+        # 確保drift rates有最小值
+        v_winner = pm.math.maximum(v_winner, 0.1)
+        v_loser = pm.math.maximum(v_loser, 0.05)
         
         # 使用完整的LBA公式計算2選擇似然
         sqrt_t = pm.math.sqrt(decision_time)
@@ -498,13 +660,8 @@ class EvidenceIntegrationComparison:
         # 轉為對數似然
         log_likelihood = pm.math.log(joint_likelihood)
         
-        # 處理無效值
-        is_invalid = (
-            pm.math.isnan(log_likelihood) | 
-            pm.math.eq(log_likelihood, -np.inf) | 
-            pm.math.eq(log_likelihood, np.inf)
-        )
-        log_likelihood_safe = pm.math.where(is_invalid, -100.0, log_likelihood)
+        # 處理無效值 - 直接裁剪極端值
+        log_likelihood_safe = pm.math.clip(log_likelihood, -100.0, 10.0)
         
         # 裁剪極端值並求和
         return pm.math.sum(pm.math.clip(log_likelihood_safe, -100.0, 10.0))
@@ -521,55 +678,113 @@ class EvidenceIntegrationComparison:
         parallel_trace = integration_results['parallel_and_trace']
         
         try:
-            # 計算WAIC
-            coactive_waic = az.waic(coactive_trace)
-            parallel_waic = az.waic(parallel_trace)
+            # 方法1: 嘗試計算WAIC
+            try:
+                coactive_waic = az.waic(coactive_trace)
+                parallel_waic = az.waic(parallel_trace)
+                
+                waic_diff = coactive_waic.waic - parallel_waic.waic
+                waic_available = True
+                
+            except Exception as e:
+                print(f"   ⚠️ WAIC計算失敗: {e}")
+                waic_available = False
             
-            # 計算LOO
-            coactive_loo = az.loo(coactive_trace)
-            parallel_loo = az.loo(parallel_trace)
+            # 方法2: 嘗試計算LOO
+            try:
+                coactive_loo = az.loo(coactive_trace)
+                parallel_loo = az.loo(parallel_trace)
+                
+                loo_diff = coactive_loo.loo - parallel_loo.loo
+                loo_available = True
+                
+            except Exception as e:
+                print(f"   ⚠️ LOO計算失敗: {e}")
+                loo_available = False
             
-            # WAIC差異 (近似Bayes Factor)
-            waic_diff = coactive_waic.waic - parallel_waic.waic
-            loo_diff = coactive_loo.loo - parallel_loo.loo
+            # 方法3: 備用計算 - 使用似然估計
+            if not waic_available and not loo_available:
+                print("   🔄 使用備用方法計算模型比較...")
+                
+                # 計算平均對數似然
+                try:
+                    coactive_logp = coactive_trace.log_likelihood['coactive_obs_rt'].mean()
+                    parallel_logp = parallel_trace.log_likelihood['parallel_obs_rt'].mean()
+                    
+                    likelihood_diff = float(coactive_logp.sum() - parallel_logp.sum())
+                    
+                    if likelihood_diff < -10:
+                        conclusion = "強烈支持 Coactive 假設"
+                    elif likelihood_diff < 0:
+                        conclusion = "傾向支持 Coactive 假設"
+                    elif likelihood_diff > 10:
+                        conclusion = "強烈支持 Parallel AND 假設"
+                    else:
+                        conclusion = "傾向支持 Parallel AND 假設"
+                    
+                    comparison_results = {
+                        'method': 'likelihood_comparison',
+                        'likelihood_diff': likelihood_diff,
+                        'conclusion': conclusion
+                    }
+                    
+                except Exception as e:
+                    print(f"   ❌ 備用方法也失敗: {e}")
+                    return None
             
-            # 解釋結果
-            if waic_diff < -2:
-                waic_conclusion = "強烈支持 Coactive 假設"
-            elif waic_diff < 0:
-                waic_conclusion = "傾向支持 Coactive 假設"
-            elif waic_diff > 2:
-                waic_conclusion = "強烈支持 Parallel AND 假設"
             else:
-                waic_conclusion = "傾向支持 Parallel AND 假設"
-            
-            if loo_diff < -2:
-                loo_conclusion = "強烈支持 Coactive 假設"
-            elif loo_diff < 0:
-                loo_conclusion = "傾向支持 Coactive 假設"
-            elif loo_diff > 2:
-                loo_conclusion = "強烈支持 Parallel AND 假設"
-            else:
-                loo_conclusion = "傾向支持 Parallel AND 假設"
-            
-            comparison_results = {
-                'coactive_waic': coactive_waic.waic,
-                'parallel_waic': parallel_waic.waic,
-                'waic_diff': waic_diff,
-                'waic_conclusion': waic_conclusion,
-                'coactive_loo': coactive_loo.loo,
-                'parallel_loo': parallel_loo.loo,
-                'loo_diff': loo_diff,
-                'loo_conclusion': loo_conclusion
-            }
+                # 使用WAIC或LOO結果
+                if waic_available:
+                    if waic_diff < -2:
+                        waic_conclusion = "強烈支持 Coactive 假設"
+                    elif waic_diff < 0:
+                        waic_conclusion = "傾向支持 Coactive 假設"
+                    elif waic_diff > 2:
+                        waic_conclusion = "強烈支持 Parallel AND 假設"
+                    else:
+                        waic_conclusion = "傾向支持 Parallel AND 假設"
+                else:
+                    waic_diff = None
+                    waic_conclusion = "WAIC無法計算"
+                
+                if loo_available:
+                    if loo_diff < -2:
+                        loo_conclusion = "強烈支持 Coactive 假設"
+                    elif loo_diff < 0:
+                        loo_conclusion = "傾向支持 Coactive 假設"
+                    elif loo_diff > 2:
+                        loo_conclusion = "強烈支持 Parallel AND 假設"
+                    else:
+                        loo_conclusion = "傾向支持 Parallel AND 假設"
+                else:
+                    loo_diff = None
+                    loo_conclusion = "LOO無法計算"
+                
+                comparison_results = {
+                    'method': 'information_criteria',
+                    'coactive_waic': coactive_waic.waic if waic_available else None,
+                    'parallel_waic': parallel_waic.waic if waic_available else None,
+                    'waic_diff': waic_diff,
+                    'waic_conclusion': waic_conclusion,
+                    'coactive_loo': coactive_loo.loo if loo_available else None,
+                    'parallel_loo': parallel_loo.loo if loo_available else None,
+                    'loo_diff': loo_diff,
+                    'loo_conclusion': loo_conclusion
+                }
             
             print(f"   📊 模型比較結果:")
-            print(f"      Coactive WAIC:    {coactive_waic.waic:.2f}")
-            print(f"      Parallel WAIC:    {parallel_waic.waic:.2f}")
-            print(f"      WAIC 差異:        {waic_diff:.2f}")
-            print(f"      WAIC 結論:        {waic_conclusion}")
-            print(f"      LOO 差異:         {loo_diff:.2f}")
-            print(f"      LOO 結論:         {loo_conclusion}")
+            if comparison_results['method'] == 'information_criteria':
+                if waic_available:
+                    print(f"      Coactive WAIC:    {coactive_waic.waic:.2f}")
+                    print(f"      Parallel WAIC:    {parallel_waic.waic:.2f}")
+                    print(f"      WAIC 差異:        {waic_diff:.2f}")
+                    print(f"      WAIC 結論:        {waic_conclusion}")
+                if loo_available:
+                    print(f"      LOO 差異:         {loo_diff:.2f}")
+                    print(f"      LOO 結論:         {loo_conclusion}")
+            else:
+                print(f"      似然差異:         {comparison_results['likelihood_diff']:.2f}")
+                print(f"      結論:            {comparison_results['conclusion']}")
             
             return comparison_results
             
@@ -577,9 +792,29 @@ class EvidenceIntegrationComparison:
             print(f"   ❌ Bayes Factor計算失敗: {e}")
             return None
 
-def run_evidence_integration_analysis(csv_file='GRT_LBA.csv', subject_id=None):
+def _get_final_conclusion(bayes_results):
+    """獲取最終結論"""
+    if not bayes_results:
+        return "無法判斷"
+    
+    if bayes_results['method'] == 'information_criteria':
+        if 'waic_conclusion' in bayes_results and bayes_results['waic_conclusion'] != "WAIC無法計算":
+            return bayes_results['waic_conclusion']
+        elif 'loo_conclusion' in bayes_results and bayes_results['loo_conclusion'] != "LOO無法計算":
+            return bayes_results['loo_conclusion']
+        else:
+            return "無法判斷"
+    else:
+        return bayes_results.get('conclusion', '無法判斷')
+
+def run_evidence_integration_analysis(csv_file='GRT_LBA.csv', subject_id=None, min_accuracy=0.5):
     """
     執行完整的證據整合分析
+    
+    Args:
+        csv_file: 數據檔案路徑
+        subject_id: 受試者ID，如果None則自動選擇符合條件的受試者
+        min_accuracy: 最低準確率要求 (預設50%)
     """
     
     print("🚀 證據整合假設檢驗分析")
@@ -588,23 +823,81 @@ def run_evidence_integration_analysis(csv_file='GRT_LBA.csv', subject_id=None):
     start_time = time.time()
     
     try:
-        # 載入資料
-        processor = DataProcessor()
-        df = processor.load_and_clean_data(csv_file)
+        # 載入資料 - 直接使用pandas，不依賴DataProcessor
+        print("📂 載入資料...")
+        df = pd.read_csv(csv_file)
+        print(f"✅ 載入 {len(df)} 個試驗")
         
-        # 選擇受試者
-        if subject_id is None:
-            subject_id = df['participant'].iloc[0]
-            print(f"自動選擇受試者: {subject_id}")
+        # 基本資料清理
+        df = df.dropna(subset=['Response', 'RT', 'Stimulus', 'participant'])
+        df = df[(df['RT'] >= 0.1) & (df['RT'] <= 3.0)]
+        df = df[df['Response'].isin([0, 1, 2, 3])]
+        df = df[df['Stimulus'].isin([0, 1, 2, 3])]
+        
+        print(f"✅ 清理後: {len(df)} 個試驗")
+        print(f"   受試者數: {df['participant'].nunique()}")
         
         # 創建分析器
         analyzer = EvidenceIntegrationComparison()
         
+        # 選擇受試者並檢查準確率
+        if subject_id is None:
+            # 自動選擇符合條件的受試者
+            suitable_subjects = []
+            
+            print(f"\n🔍 尋找準確率 ≥ {min_accuracy:.0%} 的受試者...")
+            
+            for sid in df['participant'].unique():
+                temp_data = analyzer.prepare_subject_data(df, sid)
+                if temp_data['accuracy'] >= min_accuracy and temp_data['n_trials'] >= 50:
+                    suitable_subjects.append({
+                        'id': sid,
+                        'accuracy': temp_data['accuracy'],
+                        'n_trials': temp_data['n_trials']
+                    })
+            
+            if not suitable_subjects:
+                print(f"❌ 找不到準確率 ≥ {min_accuracy:.0%} 且試驗數 ≥ 50 的受試者")
+                print("   建議降低準確率要求或檢查數據品質")
+                return {
+                    'success': False,
+                    'error': f'No subjects with accuracy >= {min_accuracy:.0%}',
+                    'total_time': time.time() - start_time
+                }
+            
+            # 選擇準確率最高的受試者
+            best_subject = max(suitable_subjects, key=lambda x: x['accuracy'])
+            subject_id = best_subject['id']
+            
+            print(f"✅ 找到 {len(suitable_subjects)} 位符合條件的受試者")
+            print(f"   自動選擇受試者 {subject_id} (準確率: {best_subject['accuracy']:.1%}, 試驗數: {best_subject['n_trials']})")
+            
+        else:
+            # 檢查指定受試者是否符合條件
+            temp_data = analyzer.prepare_subject_data(df, subject_id)
+            if temp_data['accuracy'] < min_accuracy:
+                print(f"❌ 受試者 {subject_id} 準確率 {temp_data['accuracy']:.1%} < {min_accuracy:.0%}")
+                print("   跳過分析，建議選擇其他受試者")
+                return {
+                    'success': False,
+                    'error': f'Subject {subject_id} accuracy {temp_data["accuracy"]:.1%} below threshold',
+                    'total_time': time.time() - start_time
+                }
+        
         # 準備數據
         subject_data = analyzer.prepare_subject_data(df, subject_id)
-        print(f"受試者 {subject_id}: {subject_data['n_trials']} trials, 準確率 {subject_data['accuracy']:.1%}")
+        print(f"\n📊 受試者 {subject_id} 數據分析:")
+        print(f"   試驗數: {subject_data['n_trials']}")
+        print(f"   整體準確率: {subject_data['accuracy']:.1%}")
+        print(f"   左通道準確率: {subject_data['left_accuracy']:.1%}")
+        print(f"   右通道準確率: {subject_data['right_accuracy']:.1%}")
+        
+        # 檢查數據分布
+        print(f"   刺激分布: {np.bincount(subject_data['stimuli'])}")
+        print(f"   選擇分布: {np.bincount(subject_data['choices'])}")
         
         # 步驟1: Single LBA估計
+        print(f"\n📍 開始三步驟分析...")
         single_model, single_trace, drift_estimates = analyzer.step1_estimate_single_lba(subject_data)
         
         # 步驟2: 證據整合測試
@@ -618,11 +911,13 @@ def run_evidence_integration_analysis(csv_file='GRT_LBA.csv', subject_id=None):
         print(f"\n{'='*60}")
         print("🎉 證據整合分析完成!")
         print(f"⏱️ 總時間: {total_time/60:.1f} 分鐘")
-        print(f"🏆 最終結論: {bayes_results['waic_conclusion'] if bayes_results else '無法判斷'}")
+        print(f"🏆 最終結論: {_get_final_conclusion(bayes_results)}")
         print("="*60)
         
         return {
             'subject_id': subject_id,
+            'subject_accuracy': subject_data['accuracy'],
+            'n_trials': subject_data['n_trials'],
             'drift_estimates': drift_estimates,
             'integration_results': integration_results,
             'bayes_results': bayes_results,
@@ -641,6 +936,109 @@ def run_evidence_integration_analysis(csv_file='GRT_LBA.csv', subject_id=None):
             'total_time': time.time() - start_time
         }
 
+def run_batch_analysis(csv_file='GRT_LBA.csv', max_subjects=5, min_accuracy=0.5):
+    """
+    批次分析多個受試者
+    
+    Args:
+        csv_file: 數據檔案路徑
+        max_subjects: 最大分析受試者數
+        min_accuracy: 最低準確率要求
+    """
+    
+    print("🚀 批次證據整合分析")
+    print("=" * 60)
+    
+    start_time = time.time()
+    results = []
+    
+    try:
+        # 載入資料
+        df = pd.read_csv(csv_file)
+        df = df.dropna(subset=['Response', 'RT', 'Stimulus', 'participant'])
+        df = df[(df['RT'] >= 0.1) & (df['RT'] <= 3.0)]
+        df = df[df['Response'].isin([0, 1, 2, 3])]
+        df = df[df['Stimulus'].isin([0, 1, 2, 3])]
+        
+        # 篩選符合條件的受試者
+        analyzer = EvidenceIntegrationComparison()
+        suitable_subjects = []
+        
+        for sid in df['participant'].unique():
+            temp_data = analyzer.prepare_subject_data(df, sid)
+            if temp_data['accuracy'] >= min_accuracy and temp_data['n_trials'] >= 50:
+                suitable_subjects.append({
+                    'id': sid,
+                    'accuracy': temp_data['accuracy'],
+                    'n_trials': temp_data['n_trials']
+                })
+        
+        # 按準確率排序，選擇最好的
+        suitable_subjects.sort(key=lambda x: x['accuracy'], reverse=True)
+        selected_subjects = suitable_subjects[:max_subjects]
+        
+        print(f"📊 符合條件的受試者: {len(suitable_subjects)}")
+        print(f"   選擇分析: {len(selected_subjects)} 位")
+        
+        # 逐一分析
+        for i, subject_info in enumerate(selected_subjects, 1):
+            print(f"\n{'='*40}")
+            print(f"📍 分析 {i}/{len(selected_subjects)}: 受試者 {subject_info['id']}")
+            print(f"   預期準確率: {subject_info['accuracy']:.1%}")
+            
+            result = run_evidence_integration_analysis(
+                csv_file, 
+                subject_id=subject_info['id'], 
+                min_accuracy=min_accuracy
+            )
+            
+            results.append(result)
+            
+            if result['success']:
+                print(f"   ✅ 完成: {result['bayes_results']['waic_conclusion'] if result['bayes_results'] else '無法判斷'}")
+            else:
+                print(f"   ❌ 失敗: {result['error']}")
+        
+        # 統計結果
+        successful_results = [r for r in results if r['success']]
+        total_time = time.time() - start_time
+        
+        print(f"\n{'='*60}")
+        print("🎉 批次分析完成!")
+        print(f"⏱️ 總時間: {total_time/60:.1f} 分鐘")
+        print(f"✅ 成功率: {len(successful_results)}/{len(results)} ({len(successful_results)/len(results)*100:.1f}%)")
+        
+        if successful_results:
+            # 統計結論
+            coactive_count = sum(1 for r in successful_results 
+                               if r['bayes_results'] and 'Coactive' in r['bayes_results']['waic_conclusion'])
+            parallel_count = sum(1 for r in successful_results 
+                               if r['bayes_results'] and 'Parallel' in r['bayes_results']['waic_conclusion'])
+            
+            print(f"🏆 結論統計:")
+            print(f"   支持 Coactive: {coactive_count} 位")
+            print(f"   支持 Parallel AND: {parallel_count} 位")
+            
+        print("="*60)
+        
+        return {
+            'results': results,
+            'successful_count': len(successful_results),
+            'total_time': total_time,
+            'success': True
+        }
+        
+    except Exception as e:
+        print(f"\n❌ 批次分析失敗: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        return {
+            'success': False,
+            'error': str(e),
+            'total_time': time.time() - start_time
+        }
+
 if __name__ == "__main__":
     print("🎯 證據整合假設檢驗:")
     print("=" * 40)
@@ -648,20 +1046,45 @@ if __name__ == "__main__":
     print("1. 用Single LBA估計左右通道drift rate")
     print("2. 測試Coactive (相加) vs Parallel AND (最大值) 假設")
     print("3. 用Bayes Factor判斷哪個假設更符合數據")
+    print()
+    print("選項:")
+    print("1. 單一受試者分析 (自動選擇)")
+    print("2. 指定受試者分析")
+    print("3. 批次分析 (多個受試者)")
     
     try:
-        choice = input("\n是否開始分析? (y/n): ").strip().lower()
+        choice = input("\n請選擇 (1-3): ").strip()
         
-        if choice == 'y':
-            print("\n🚀 開始證據整合分析...")
+        if choice == '1':
+            print("\n🚀 開始單一受試者分析 (自動選擇準確率最高者)...")
             result = run_evidence_integration_analysis()
             
             if result['success']:
                 print("\n✅ 分析成功完成!")
             else:
                 print("\n❌ 分析失敗")
+                
+        elif choice == '2':
+            subject_id = int(input("請輸入受試者ID: "))
+            print(f"\n🚀 開始受試者 {subject_id} 分析...")
+            result = run_evidence_integration_analysis(subject_id=subject_id)
+            
+            if result['success']:
+                print("\n✅ 分析成功完成!")
+            else:
+                print("\n❌ 分析失敗")
+                
+        elif choice == '3':
+            max_subjects = int(input("請輸入最大分析受試者數 (建議3-5): ") or "3")
+            print(f"\n🚀 開始批次分析 (最多{max_subjects}位受試者)...")
+            result = run_batch_analysis(max_subjects=max_subjects)
+            
+            if result['success']:
+                print("\n✅ 批次分析成功完成!")
+            else:
+                print("\n❌ 批次分析失敗")
         else:
-            print("分析取消")
+            print("無效選擇，分析取消")
             
     except KeyboardInterrupt:
         print("\n⏹️ 分析被使用者中斷")
