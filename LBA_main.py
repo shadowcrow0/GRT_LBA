@@ -160,7 +160,13 @@ class LBAAnalysisRunner:
             print(f"\n📊 擬合 {model_name}...")
             try:
                 # 創建模型
-                model = create_model_by_name(model_name, participant_data, participant_input)
+                try:
+                    from lba_models import create_model_by_name_fixed
+                    model = create_model_by_name_fixed(model_name, participant_data, participant_input)
+                    print(f"✅ 使用修復版模型: {model_name}")
+                except ImportError:
+                    model = create_model_by_name(model_name, participant_data, participant_input)
+                    print(f"⚠️ 使用原始版模型: {model_name}")
                 
                 # 採樣
                 from LBA_tool import sample_with_convergence_check
@@ -168,8 +174,8 @@ class LBAAnalysisRunner:
                 trace, diagnostics = sample_with_convergence_check(
                     model, 
                     max_attempts=2,
-                    draws=500,  # 適度增加 draws 以獲得更多樣本
-                    tune=1500,  # <-- 大幅增加 tune 的值
+                    draws=800,  # 適度增加 draws 以獲得更多樣本
+                    tune=800,  # <-- 大幅增加 tune 的值
                     chains=4    # 使用 4 條鏈可以更好地診斷收斂問題
                 )
                 

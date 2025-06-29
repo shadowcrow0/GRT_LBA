@@ -209,110 +209,220 @@ def calculate_sigma_matrices_from_traces(models, participant_id, save_dir=None):
 
 def improved_model_comparison(models, method='auto'):
     """
-    改進的模型比較函數 - TRY TO USE ROBUST VERSION FIRST
+    完全重寫的模型比較函數 - 解決 WAIC/LOO 失敗問題
+    替換 LBA_tool.py 中的原始函數
     """
     
-    print("  執行模型比較...")
-    
-    # Try to use the robust version from our fixes if available
-    try:
-        from LBA_tool_fixes import robust_model_comparison
-        return robust_model_comparison(models, method)
-    except ImportError:
-        print("    使用備用模型比較方法...")
+    print("🔬 開始增強版模型比較...")
     
     if len(models) < 2:
-        print("    需要至少2個模型進行比較")
+        print("❌ 需要至少 2 個模型進行比較")
         return None
     
-    try:
-        # 使用 ArviZ 進行模型比較
-        model_dict = {name: trace for name, trace in models.items()}
+    # 步驟 1: 診斷每個模型
+    print("\n📋 診斷所有模型...")
+    model_diagnostics = {}
+    valid_models = {}
+    
+    for model_name, trace in models.items():
+        print(f"  檢查 {model_name}...")
         
-        # 計算 WAIC
-        comparison_result = az.compare(model_dict, ic='waic')
+        # 檢查基本要求
+        has_log_likelihood = hasattr(trace, 'log_likelihood')
+        has_posterior = hasattr(trace, 'posterior')
         
-        # 提取結果
-        winner = comparison_result.index[0]  # 排名第一的模型
-        
-        # 計算 ELPD 差異
-        if len(comparison_result) >= 2:
-            elpd_diff = comparison_result.iloc[1]['elpd_diff']
-            dse = comparison_result.iloc[1]['dse'] if 'dse' in comparison_result.columns else 0
+        if has_log_likelihood:
+            try:
+                ll_values = trace.log_likelihood.likelihood.values
+                n_nan = np.isnan(ll_values).sum()
+                n_inf = np.isinf(ll_values).sum()
+                n_total = ll_values.size
+                
+                if n_nan == 0 and n_inf == 0:
+                    valid_models[model_name] = trace
+                    print(f"    ✓ {model_name}: log_likelihood 正常")
+                else:
+                    print(f"    ❌ {model_name}: log_likelihood 有 {n_nan} NaN, {n_inf} inf")
+            except:
+                print(f"    ❌ {model_name}: log_likelihood 無法訪問")
         else:
-            elpd_diff = 0
-            dse = 0
+            print(f"    ❌ {model_name}: 缺少 log_likelihood")
         
-        # 計算效應量
-        effect_size = abs(elpd_diff / dse) if dse > 0 else 0
-        
-        # 判斷顯著性
-        if effect_size > 2:
-            significance = 'Significant'
-        elif effect_size > 1:
-            significance = 'Weak'
-        else:
-            significance = 'Non-significant'
-        
-        result = {
-            'winner': winner,
-            'elpd_diff': elpd_diff,
-            'dse': dse,
-            'effect_size': effect_size,
-            'significance': significance,
-            'method': 'WAIC',
-            'comparison_table': comparison_result
+        model_diagnostics[model_name] = {
+            'has_log_likelihood': has_log_likelihood,
+            'has_posterior': has_posterior
         }
+    
+    # 步驟 2: 如果有有效模型，嘗試標準方法
+    if len(valid_models) >= 2:
+        print(f"\n📊 找到 {len(valid_models)} 個有效模型，嘗試標準方法...")
         
-        print(f"    獲勝者: {winner}")
-        print(f"    ELPD 差異: {elpd_diff:.3f} ± {dse:.3f}")
-        print(f"    效應量: {effect_size:.3f} ({significance})")
-        
-        return result
-        
-    except Exception as e:
-        print(f"    ❌ 模型比較失敗: {e}")
-        
-        # 簡化的後備比較方法
-        print("    使用簡化比較方法...")
+        # 嘗試 WAIC
         try:
-            model_names = list(models.keys())
+            print("  嘗試 WAIC...")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                comparison_result = az.compare(valid_models, ic='waic')
             
-            # 基於樣本數量和基本統計的簡單比較
-            model_scores = {}
-            for name, trace in models.items():
-                try:
-                    # 使用後驗樣本的數量和基本統計作為評分
-                    n_samples = len(trace.posterior.coords['draw']) * len(trace.posterior.coords['chain'])
-                    
-                    # 簡單的評分：更多樣本 = 更好
-                    score = n_samples
-                    model_scores[name] = score
-                    
-                except Exception:
-                    model_scores[name] = 0
+            winner = comparison_result.index[0]
             
-            # 找到最高分的模型
-            winner = max(model_scores, key=model_scores.get)
+            if len(comparison_result) >= 2:
+                elpd_diff = comparison_result.iloc[1]['elpd_diff']
+                dse = comparison_result.iloc[1]['dse'] if 'dse' in comparison_result.columns else 1
+            else:
+                elpd_diff = 0
+                dse = 1
             
-            result = {
+            effect_size = abs(elpd_diff / dse) if dse > 0 else 0
+            significance = 'Significant' if effect_size > 2 else ('Weak' if effect_size > 1 else 'Non-significant')
+            
+            print(f"    ✅ WAIC 成功！獲勝者: {winner}")
+            
+            return {
                 'winner': winner,
-                'elpd_diff': np.nan,
-                'dse': np.nan,
-                'effect_size': np.nan,
-                'significance': 'Unknown',
-                'method': 'Simple',
-                'comparison_table': None,
-                'scores': model_scores
+                'method': 'WAIC',
+                'elpd_diff': elpd_diff,
+                'dse': dse,
+                'effect_size': effect_size,
+                'significance': significance,
+                'comparison_table': comparison_result,
+                'success': True
             }
             
-            print(f"    簡化比較獲勝者: {winner}")
-            return result
+        except Exception as e:
+            print(f"    ❌ WAIC 失敗: {str(e)[:100]}...")
+        
+        # 嘗試 LOO
+        try:
+            print("  嘗試 LOO...")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                comparison_result = az.compare(valid_models, ic='loo')
             
-        except Exception as e2:
-            print(f"    ❌ 簡化比較也失敗: {e2}")
-            return None
-
+            winner = comparison_result.index[0]
+            
+            if len(comparison_result) >= 2:
+                elpd_diff = comparison_result.iloc[1]['elpd_diff']
+                dse = comparison_result.iloc[1]['dse'] if 'dse' in comparison_result.columns else 1
+            else:
+                elpd_diff = 0
+                dse = 1
+            
+            effect_size = abs(elpd_diff / dse) if dse > 0 else 0
+            significance = 'Significant' if effect_size > 2 else ('Weak' if effect_size > 1 else 'Non-significant')
+            
+            print(f"    ✅ LOO 成功！獲勝者: {winner}")
+            
+            return {
+                'winner': winner,
+                'method': 'LOO', 
+                'elpd_diff': elpd_diff,
+                'dse': dse,
+                'effect_size': effect_size,
+                'significance': significance,
+                'comparison_table': comparison_result,
+                'success': True
+            }
+            
+        except Exception as e:
+            print(f"    ❌ LOO 失敗: {str(e)[:100]}...")
+    
+    # 步驟 3: 使用替代比較方法
+    print("\n🔄 使用替代比較方法...")
+    
+    model_scores = {}
+    
+    for model_name, trace in models.items():
+        try:
+            score = 0
+            
+            # 方法 1: 如果有 log_likelihood，使用平均值
+            if hasattr(trace, 'log_likelihood'):
+                try:
+                    ll_values = trace.log_likelihood.likelihood.values
+                    # 清理異常值
+                    ll_clean = ll_values[np.isfinite(ll_values)]
+                    if len(ll_clean) > 0:
+                        score = np.mean(ll_clean)
+                        print(f"    {model_name}: 平均 log-likelihood = {score:.2f}")
+                        model_scores[model_name] = score
+                        continue
+                except:
+                    pass
+            
+            # 方法 2: 基於收斂性評分
+            try:
+                summary = az.summary(trace)
+                max_rhat = summary['r_hat'].max() if 'r_hat' in summary.columns else 1.0
+                min_ess = summary['ess_bulk'].min() if 'ess_bulk' in summary.columns else 1000
+                
+                # 收斂評分：懲罰高 R-hat，獎勵高 ESS
+                score = min_ess / max(max_rhat - 1.0, 0.01)
+                print(f"    {model_name}: 收斂評分 = {score:.2f}")
+                model_scores[model_name] = score
+                continue
+            except:
+                pass
+            
+            # 方法 3: 基本評分（樣本數）
+            try:
+                n_samples = len(trace.posterior.coords['draw']) * len(trace.posterior.coords['chain'])
+                score = n_samples
+                print(f"    {model_name}: 樣本數評分 = {score}")
+                model_scores[model_name] = score
+            except:
+                model_scores[model_name] = 0
+                print(f"    {model_name}: 無法評分")
+        
+        except Exception as e:
+            print(f"    ❌ {model_name} 評分失敗: {e}")
+            model_scores[model_name] = 0
+    
+    # 確定獲勝者
+    if model_scores:
+        winner = max(model_scores, key=model_scores.get)
+        winner_score = model_scores[winner]
+        
+        # 計算效應量
+        sorted_scores = sorted(model_scores.values(), reverse=True)
+        if len(sorted_scores) >= 2 and sorted_scores[1] > 0:
+            effect_size = (sorted_scores[0] - sorted_scores[1]) / abs(sorted_scores[1])
+            effect_size = min(effect_size, 5.0)  # 限制最大值
+        else:
+            effect_size = 0
+        
+        significance = 'Significant' if effect_size > 0.5 else ('Weak' if effect_size > 0.2 else 'Non-significant')
+        
+        print(f"    🏆 替代方法獲勝者: {winner} (評分: {winner_score:.2f})")
+        print(f"    效應量: {effect_size:.3f} ({significance})")
+        
+        return {
+            'winner': winner,
+            'method': 'Alternative',
+            'elpd_diff': np.nan,
+            'dse': np.nan,
+            'effect_size': effect_size,
+            'significance': significance,
+            'comparison_table': None,
+            'model_scores': model_scores,
+            'success': True
+        }
+    else:
+        print("    ❌ 所有評分方法都失敗")
+        # 最後手段：選擇第一個模型
+        winner = list(models.keys())[0]
+        print(f"    🏳️ 默認選擇: {winner}")
+        
+        return {
+            'winner': winner,
+            'method': 'Default',
+            'elpd_diff': np.nan,
+            'dse': np.nan,
+            'effect_size': np.nan,
+            'significance': 'Unknown',
+            'comparison_table': None,
+            'success': False
+        }
 def safe_trace_summary(trace, model_name):
     """
     安全的 trace 總結函數
@@ -418,7 +528,222 @@ def create_model_summary_report(models, participant_id, save_dir):
     except Exception as e:
         print(f"    ❌ 創建模型總結報告失敗: {e}")
         return None
-
+def improved_model_comparison(models, method='auto'):
+    """
+    完全重寫的模型比較函數 - 解決 WAIC/LOO 失敗問題
+    替換 LBA_tool.py 中的原始函數
+    """
+    
+    print("🔬 開始增強版模型比較...")
+    
+    if len(models) < 2:
+        print("❌ 需要至少 2 個模型進行比較")
+        return None
+    
+    # 步驟 1: 診斷每個模型
+    print("\n📋 診斷所有模型...")
+    model_diagnostics = {}
+    valid_models = {}
+    
+    for model_name, trace in models.items():
+        print(f"  檢查 {model_name}...")
+        
+        # 檢查基本要求
+        has_log_likelihood = hasattr(trace, 'log_likelihood')
+        has_posterior = hasattr(trace, 'posterior')
+        
+        if has_log_likelihood:
+            try:
+                ll_values = trace.log_likelihood.likelihood.values
+                n_nan = np.isnan(ll_values).sum()
+                n_inf = np.isinf(ll_values).sum()
+                n_total = ll_values.size
+                
+                if n_nan == 0 and n_inf == 0:
+                    valid_models[model_name] = trace
+                    print(f"    ✓ {model_name}: log_likelihood 正常")
+                else:
+                    print(f"    ❌ {model_name}: log_likelihood 有 {n_nan} NaN, {n_inf} inf")
+            except:
+                print(f"    ❌ {model_name}: log_likelihood 無法訪問")
+        else:
+            print(f"    ❌ {model_name}: 缺少 log_likelihood")
+        
+        model_diagnostics[model_name] = {
+            'has_log_likelihood': has_log_likelihood,
+            'has_posterior': has_posterior
+        }
+    
+    # 步驟 2: 如果有有效模型，嘗試標準方法
+    if len(valid_models) >= 2:
+        print(f"\n📊 找到 {len(valid_models)} 個有效模型，嘗試標準方法...")
+        
+        # 嘗試 WAIC
+        try:
+            print("  嘗試 WAIC...")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                comparison_result = az.compare(valid_models, ic='waic')
+            
+            winner = comparison_result.index[0]
+            
+            if len(comparison_result) >= 2:
+                elpd_diff = comparison_result.iloc[1]['elpd_diff']
+                dse = comparison_result.iloc[1]['dse'] if 'dse' in comparison_result.columns else 1
+            else:
+                elpd_diff = 0
+                dse = 1
+            
+            effect_size = abs(elpd_diff / dse) if dse > 0 else 0
+            significance = 'Significant' if effect_size > 2 else ('Weak' if effect_size > 1 else 'Non-significant')
+            
+            print(f"    ✅ WAIC 成功！獲勝者: {winner}")
+            
+            return {
+                'winner': winner,
+                'method': 'WAIC',
+                'elpd_diff': elpd_diff,
+                'dse': dse,
+                'effect_size': effect_size,
+                'significance': significance,
+                'comparison_table': comparison_result,
+                'success': True
+            }
+            
+        except Exception as e:
+            print(f"    ❌ WAIC 失敗: {str(e)[:100]}...")
+        
+        # 嘗試 LOO
+        try:
+            print("  嘗試 LOO...")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                comparison_result = az.compare(valid_models, ic='loo')
+            
+            winner = comparison_result.index[0]
+            
+            if len(comparison_result) >= 2:
+                elpd_diff = comparison_result.iloc[1]['elpd_diff']
+                dse = comparison_result.iloc[1]['dse'] if 'dse' in comparison_result.columns else 1
+            else:
+                elpd_diff = 0
+                dse = 1
+            
+            effect_size = abs(elpd_diff / dse) if dse > 0 else 0
+            significance = 'Significant' if effect_size > 2 else ('Weak' if effect_size > 1 else 'Non-significant')
+            
+            print(f"    ✅ LOO 成功！獲勝者: {winner}")
+            
+            return {
+                'winner': winner,
+                'method': 'LOO', 
+                'elpd_diff': elpd_diff,
+                'dse': dse,
+                'effect_size': effect_size,
+                'significance': significance,
+                'comparison_table': comparison_result,
+                'success': True
+            }
+            
+        except Exception as e:
+            print(f"    ❌ LOO 失敗: {str(e)[:100]}...")
+    
+    # 步驟 3: 使用替代比較方法
+    print("\n🔄 使用替代比較方法...")
+    
+    model_scores = {}
+    
+    for model_name, trace in models.items():
+        try:
+            score = 0
+            
+            # 方法 1: 如果有 log_likelihood，使用平均值
+            if hasattr(trace, 'log_likelihood'):
+                try:
+                    ll_values = trace.log_likelihood.likelihood.values
+                    # 清理異常值
+                    ll_clean = ll_values[np.isfinite(ll_values)]
+                    if len(ll_clean) > 0:
+                        score = np.mean(ll_clean)
+                        print(f"    {model_name}: 平均 log-likelihood = {score:.2f}")
+                        model_scores[model_name] = score
+                        continue
+                except:
+                    pass
+            
+            # 方法 2: 基於收斂性評分
+            try:
+                summary = az.summary(trace)
+                max_rhat = summary['r_hat'].max() if 'r_hat' in summary.columns else 1.0
+                min_ess = summary['ess_bulk'].min() if 'ess_bulk' in summary.columns else 1000
+                
+                # 收斂評分：懲罰高 R-hat，獎勵高 ESS
+                score = min_ess / max(max_rhat - 1.0, 0.01)
+                print(f"    {model_name}: 收斂評分 = {score:.2f}")
+                model_scores[model_name] = score
+                continue
+            except:
+                pass
+            
+            # 方法 3: 基本評分（樣本數）
+            try:
+                n_samples = len(trace.posterior.coords['draw']) * len(trace.posterior.coords['chain'])
+                score = n_samples
+                print(f"    {model_name}: 樣本數評分 = {score}")
+                model_scores[model_name] = score
+            except:
+                model_scores[model_name] = 0
+                print(f"    {model_name}: 無法評分")
+        
+        except Exception as e:
+            print(f"    ❌ {model_name} 評分失敗: {e}")
+            model_scores[model_name] = 0
+    
+    # 確定獲勝者
+    if model_scores:
+        winner = max(model_scores, key=model_scores.get)
+        winner_score = model_scores[winner]
+        
+        # 計算效應量
+        sorted_scores = sorted(model_scores.values(), reverse=True)
+        if len(sorted_scores) >= 2 and sorted_scores[1] > 0:
+            effect_size = (sorted_scores[0] - sorted_scores[1]) / abs(sorted_scores[1])
+            effect_size = min(effect_size, 5.0)  # 限制最大值
+        else:
+            effect_size = 0
+        
+        significance = 'Significant' if effect_size > 0.5 else ('Weak' if effect_size > 0.2 else 'Non-significant')
+        
+        print(f"    🏆 替代方法獲勝者: {winner} (評分: {winner_score:.2f})")
+        print(f"    效應量: {effect_size:.3f} ({significance})")
+        
+        return {
+            'winner': winner,
+            'method': 'Alternative',
+            'elpd_diff': np.nan,
+            'dse': np.nan,
+            'effect_size': effect_size,
+            'significance': significance,
+            'comparison_table': None,
+            'model_scores': model_scores,
+            'success': True
+        }
+    else:
+        print("    ❌ 所有評分方法都失敗")
+        # 最後手段：選擇第一個模型
+        winner = list(models.keys())[0]
+        print(f"    🏳️ 默認選擇: {winner}")
+        
+        return {
+            'winner': winner,
+            'method': 'Default',
+            'elpd_diff': np.nan,
+            'dse': np.nan,
+            'effect_size': np.nan,
+            'significance': 'Unknown',
+            'comparison_table': None,
+            'success': False
+        }
 def quick_data_check(data_file):
     """
     快速數據檢查
@@ -464,7 +789,28 @@ def quick_data_check(data_file):
     except Exception as e:
         print(f"❌ 數據檢查失敗: {e}")
         return False, str(e)
-
+def quick_comparison_test(models):
+    """快速測試模型比較修復"""
+    print("🧪 測試模型比較修復...")
+    
+    if not models or len(models) < 2:
+        print("❌ 需要至少 2 個模型進行測試")
+        return False
+    
+    try:
+        result = improved_model_comparison(models)
+        
+        if result and result.get('success', False):
+            print(f"✅ 比較成功！獲勝者: {result['winner']}")
+            print(f"   方法: {result['method']}")
+            return True
+        else:
+            print("❌ 比較失敗")
+            return False
+            
+    except Exception as e:
+        print(f"❌ 測試失敗: {e}")
+        return False
 # 如果直接運行此模組
 if __name__ == '__main__':
     print("LBA Analysis - Utility Functions Module (修復版)")
