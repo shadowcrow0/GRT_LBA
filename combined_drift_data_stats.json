@@ -1,0 +1,22 @@
+{
+  "total_trials": 12164,
+  "total_participants": 13,
+  "conditions": {
+    "asymmetric": 6098,
+    "symmetric": 6066
+  },
+  "drift_rates": {
+    "v_left_mean": {
+      "overall_mean": 1.6721615822614455,
+      "overall_std": 0.9010835708514855,
+      "min": 0.6351300472847597,
+      "max": 3.766670507583624
+    },
+    "v_right_mean": {
+      "overall_mean": 2.147549730772964,
+      "overall_std": 0.7429585275489216,
+      "min": 0.8535966232544324,
+      "max": 3.780754870221625
+    }
+  }
+}
