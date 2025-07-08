@@ -182,6 +182,12 @@ class ParallelANDModelFitter:
             
             fit_time = time.time() - start_time
             
+            # 保存trace用於診斷
+            import pickle
+            trace_file = f"participant_{participant_id}_trace.pkl"
+            with open(trace_file, 'wb') as f:
+                pickle.dump(trace, f)
+            
             result = {
                 'participant_id': participant_id,
                 'n_trials': n_trials,
