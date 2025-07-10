@@ -68,19 +68,29 @@ class ParallelANDModelFitter:
         """創建ParallelAND PyMC模型"""
         
         with pm.Model() as model:
-            # Prior distributions (same as single_side_lba)
-            left_v_vertical = pm.Gamma('left_v_vertical', alpha=2.5, beta=1.5)
-            left_v_nonvertical = pm.Gamma('left_v_nonvertical', alpha=2.5, beta=1.5)
-            left_v_vertical_error = pm.Gamma('left_v_vertical_error', alpha=2.0, beta=3.0)
-            left_v_nonvertical_error = pm.Gamma('left_v_nonvertical_error', alpha=2.0, beta=3.0)
+            # Optimized Prior distributions based on MCMC diagnostics
+            # Drift rates: 更穩定的分布，減少極端值
+            # 調整先驗分佈 - 更保守的參數避免極端值
+            left_v_vertical = pm.Gamma('left_v_vertical', alpha=2.0, beta=1.5)
+            left_v_nonvertical = pm.Gamma('left_v_nonvertical', alpha=2.0, beta=1.5)
+            left_v_vertical_error = pm.Gamma('left_v_vertical_error', alpha=1.5, beta=3.0)
+            left_v_nonvertical_error = pm.Gamma('left_v_nonvertical_error', alpha=1.5, beta=3.0)
             
-            right_v_vertical = pm.Gamma('right_v_vertical', alpha=2.5, beta=1.5)
-            right_v_nonvertical = pm.Gamma('right_v_nonvertical', alpha=2.5, beta=1.5)
-            right_v_vertical_error = pm.Gamma('right_v_vertical_error', alpha=2.0, beta=3.0)
-            right_v_nonvertical_error = pm.Gamma('right_v_nonvertical_error', alpha=2.0, beta=3.0)
+            right_v_vertical = pm.Gamma('right_v_vertical', alpha=2.0, beta=1.5)
+            right_v_nonvertical = pm.Gamma('right_v_nonvertical', alpha=2.0, beta=1.5)
+            right_v_vertical_error = pm.Gamma('right_v_vertical_error', alpha=1.5, beta=3.0)
+            right_v_nonvertical_error = pm.Gamma('right_v_nonvertical_error', alpha=1.5, beta=3.0)
             
-            threshold = pm.Gamma('threshold', alpha=3.0, beta=3.5)
-            ndt = pm.Uniform('ndt', lower=0.05, upper=0.6)
+            # 調整其他參數
+            threshold = pm.Gamma('threshold', alpha=2.5, beta=2.5)
+            ndt = pm.Uniform('ndt', lower=0.05, upper=0.4)
+            
+            # 起始點變異性 - 約束在0到threshold之間
+            A = pm.Beta("start_point_variability", alpha=2, beta=5) * threshold
+        
+
+            # Noise parameter (添加missing parameter)
+            noise = pm.Gamma('noise', alpha=2.5, beta=8.0)
             
             # 轉換資料為tensors
             responses_tensor = pt.as_tensor_variable(data['responses'])
@@ -88,12 +98,12 @@ class ParallelANDModelFitter:
             left_stimuli_tensor = pt.as_tensor_variable(data['left_stimuli'])
             right_stimuli_tensor = pt.as_tensor_variable(data['right_stimuli'])
             
-            # 計算ParallelAND RT predictions
+            # 計算ParallelAND RT predictions (加入新參數)
             predicted_rts = self._compute_parallel_and_rt(
                 left_stimuli_tensor, right_stimuli_tensor, responses_tensor,
                 left_v_vertical, left_v_nonvertical, left_v_vertical_error, left_v_nonvertical_error,
                 right_v_vertical, right_v_nonvertical, right_v_vertical_error, right_v_nonvertical_error,
-                threshold, ndt
+                threshold, ndt, A, noise
             )
             
             # Likelihood
@@ -105,37 +115,38 @@ class ParallelANDModelFitter:
     def _compute_parallel_and_rt(self, left_stimuli, right_stimuli, responses,
                                 left_v_v, left_v_nv, left_v_v_err, left_v_nv_err,
                                 right_v_v, right_v_nv, right_v_v_err, right_v_nv_err,
-                                threshold, ndt):
+                                threshold, ndt, start_var, noise):
         """計算ParallelAND RT predictions"""
         
         # 左側drift rates (基於stimulus-response組合)
         left_is_vertical_stim = pt.eq(left_stimuli, 1)
         left_is_vertical_resp = pt.or_(pt.eq(responses, 1), pt.eq(responses, 2))
         
-        # 依據single_side_lba邏輯：stimulus決定是否使用error drift rate
+        # 修正drift rate選擇邏輯：基於response-stimulus匹配
         left_drift = pt.where(
-            left_is_vertical_stim,  # Vertical stimulus
-            pt.where(left_is_vertical_resp, left_v_v, left_v_nv_err),
-            pt.where(left_is_vertical_resp, left_v_v_err, left_v_nv)
+            left_is_vertical_resp,  # Vertical response
+            pt.where(left_is_vertical_stim, left_v_v, left_v_v_err),  # 正確/錯誤
+            pt.where(left_is_vertical_stim, left_v_nv_err, left_v_nv)  # 錯誤/正確
         )
         
         # 右側drift rates (基於stimulus-response組合)
         right_is_vertical_stim = pt.eq(right_stimuli, 1)
         right_is_vertical_resp = pt.or_(pt.eq(responses, 0), pt.eq(responses, 1))
         
-        # 依據single_side_lba邏輯：stimulus決定是否使用error drift rate
+        # 修正drift rate選擇邏輯：基於response-stimulus匹配
         right_drift = pt.where(
-            right_is_vertical_stim,  # Vertical stimulus
-            pt.where(right_is_vertical_resp, right_v_v, right_v_nv_err),
-            pt.where(right_is_vertical_resp, right_v_v_err, right_v_nv)
+            right_is_vertical_resp,  # Vertical response
+            pt.where(right_is_vertical_stim, right_v_v, right_v_v_err),  # 正確/錯誤
+            pt.where(right_is_vertical_stim, right_v_nv_err, right_v_nv)  # 錯誤/正確
         )
         
         # ParallelAND: 最小drift rate
         effective_drift = pt.minimum(left_drift, right_drift)
         effective_drift = pt.maximum(effective_drift, 0.05)
         
-        # RT prediction
-        decision_time = threshold / effective_drift
+        # RT prediction with effective boundary (考慮start point variability)
+        effective_boundary = pt.maximum(threshold - start_var / 2, 0.1)  # 確保邊界為正
+        decision_time = effective_boundary / effective_drift
         predicted_rt = decision_time + ndt
         
         return predicted_rt
@@ -263,22 +274,29 @@ class ParallelANDModelFitter:
                 right_v_nv = params['right_v_nonvertical']
             
             # 確定使用的drift rates
-            if response in [1, 2]:  # Left vertical response
+            # Response 0: 左nonvertical, 右vertical
+            # Response 1: 左vertical, 右vertical  
+            # Response 2: 左vertical, 右nonvertical
+            # Response 3: 左nonvertical, 右nonvertical
+            
+            if response in [1, 2]:  # Left vertical responses
                 left_drift = left_v_v
-            else:  # Left nonvertical response
+            else:  # response in [0, 3], Left nonvertical responses
                 left_drift = left_v_nv
                 
-            if response in [0, 1]:  # Right vertical response
+            if response in [0, 1]:  # Right vertical responses  
                 right_drift = right_v_v
-            else:  # Right nonvertical response
+            else:  # response in [2, 3], Right nonvertical responses
                 right_drift = right_v_nv
             
             # ParallelAND: 最小drift rate
             effective_drift = min(left_drift, right_drift)
             effective_drift = max(effective_drift, 0.05)
             
-            # RT prediction
-            decision_time = params['threshold'] / effective_drift
+            # RT prediction with effective boundary
+            start_var = params.get('start_point_variability', 0.3)
+            effective_boundary = max(params['threshold'] - start_var / 2, 0.1)  # 確保邊界為正
+            decision_time = effective_boundary / effective_drift
             predicted_rt = decision_time + params['ndt']
             
             predicted_rts.append(predicted_rt)
