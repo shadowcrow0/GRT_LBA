@@ -1,0 +1,93 @@
+INFO - 
+======================================================================
+INFO - Flat Architecture - JOINT Parameter Estimation
+INFO - Start: 2025-11-10 21:36:39.584062
+INFO - ======================================================================
+INFO - ======================================================================
+INFO - Generate GRT-LBA Data (Flat Architecture - JOINT ESTIMATION)
+INFO - ======================================================================
+INFO - ✓ Generated 1200 trials, Accuracy: 92.8%
+INFO -   Sample data (first 10 rows):
+INFO - 
+         rt  choice  condition
+0  0.281522     0.0        0.0
+1  0.342944     0.0        0.0
+2  0.323998     0.0        0.0
+3  0.340131     0.0        0.0
+4  0.419341     0.0        0.0
+5  0.300161     0.0        0.0
+6  0.381975     0.0        0.0
+7  0.441020     0.0        0.0
+8  0.330896     0.0        0.0
+9  0.307689     0.0        0.0
+INFO - 
+  Index consistency check:
+INFO -     Condition values: [np.float64(0.0), np.float64(1.0), np.float64(2.0), np.float64(3.0)]
+INFO -     Choice values: [np.float64(0.0), np.float64(1.0), np.float64(2.0), np.float64(3.0)]
+INFO -     Both should be 0-indexed: [0, 1, 2, 3]
+INFO -     ✓ Index consistency verified
+INFO - 
+======================================================================
+INFO - MCMC sampling (DEMetropolisZ - required for custom Op)
+INFO -   draws=10000, tune=5000
+INFO -   chains=4, cores=4
+INFO -   Note: NUTS cannot be used with non-differentiable likelihood
+INFO - ======================================================================
+INFO - 
+======================================================================
+INFO - JOINT ESTIMATION: Estimate All 8 Parameters Together
+INFO - ======================================================================
+INFO - Estimating: v_L_H_correct, v_L_H_error, v_L_V_correct, v_L_V_error
+INFO -             v_R_H_correct, v_R_H_error, v_R_V_correct, v_R_V_error
+INFO - ✓ Joint estimation model built
+Multiprocess sampling (4 chains in 4 jobs)
+INFO - Multiprocess sampling (4 chains in 4 jobs)
+DEMetropolisZ: [v_L_H_correct, v_L_H_error, v_L_V_correct, v_L_V_error, v_R_H_correct, v_R_H_error, v_R_V_correct, v_R_V_error]
+INFO - DEMetropolisZ: [v_L_H_correct, v_L_H_error, v_L_V_correct, v_L_V_error, v_R_H_correct, v_R_H_error, v_R_V_correct, v_R_V_error]
+                                                                                
+  Progress                        Draws   Sampling Speed   Elapsed   Remaining  
+ ────────────────────────────────────────────────────────────────────────────── 
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   15000   35.85 draws/s    0:06:58   0:00:00    
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   15000   36.30 draws/s    0:06:53   0:00:00    
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   15000   36.65 draws/s    0:06:49   0:00:00    
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   15000   36.79 draws/s    0:06:47   0:00:00    
+                                                                                
+Sampling 4 chains for 5_000 tune and 10_000 draw iterations (20_000 + 40_000 draws total) took 418 seconds.
+INFO - Sampling 4 chains for 5_000 tune and 10_000 draw iterations (20_000 + 40_000 draws total) took 418 seconds.
+The rhat statistic is larger than 1.01 for some parameters. This indicates problems during sampling. See https://arxiv.org/abs/1903.08008 for details
+INFO - The rhat statistic is larger than 1.01 for some parameters. This indicates problems during sampling. See https://arxiv.org/abs/1903.08008 for details
+The effective sample size per chain is smaller than 100 for some parameters.  A higher number is needed for reliable rhat and ess computation. See https://arxiv.org/abs/1903.08008 for details
+ERROR - The effective sample size per chain is smaller than 100 for some parameters.  A higher number is needed for reliable rhat and ess computation. See https://arxiv.org/abs/1903.08008 for details
+INFO - 
+======================================================================
+INFO - JOINT Estimation Results Summary
+INFO - ======================================================================
+INFO - 
+                mean     sd  hdi_3%  ...  ess_bulk  ess_tail  r_hat
+v_L_H_correct  3.300  1.215   2.435  ...       5.0      23.0   2.45
+v_L_H_error    0.725  0.200   0.301  ...       7.0      32.0   1.50
+v_L_V_correct  3.365  1.168   2.658  ...       7.0      39.0   1.54
+v_L_V_error    0.649  0.183   0.302  ...       8.0      26.0   1.48
+v_R_H_correct  4.502  1.267   2.286  ...       6.0      28.0   1.66
+v_R_H_error    0.502  0.207   0.205  ...       7.0      33.0   1.56
+v_R_V_correct  4.574  1.204   2.498  ...       6.0      11.0   1.69
+v_R_V_error    0.543  0.252   0.203  ...       7.0      33.0   1.53
+
+[8 rows x 9 columns]
+INFO - 
+======================================================================
+INFO - Parameter Recovery Accuracy
+INFO - ======================================================================
+INFO - v_L_H_correct       : True=3.500, Est=3.300±1.215, Error=  5.7%, R-hat=2.4500, ESS=5
+INFO - v_L_H_error         : True=0.800, Est=0.725±0.200, Error=  9.4%, R-hat=1.5000, ESS=7
+INFO - v_L_V_correct       : True=3.500, Est=3.365±1.168, Error=  3.9%, R-hat=1.5400, ESS=7
+INFO - v_L_V_error         : True=0.800, Est=0.649±0.183, Error= 18.9%, R-hat=1.4800, ESS=8
+INFO - v_R_H_correct       : True=3.500, Est=4.502±1.267, Error= 28.6%, R-hat=1.6600, ESS=6
+INFO - v_R_H_error         : True=0.800, Est=0.502±0.207, Error= 37.3%, R-hat=1.5600, ESS=7
+INFO - v_R_V_correct       : True=3.500, Est=4.574±1.204, Error= 30.7%, R-hat=1.6900, ESS=6
+INFO - v_R_V_error         : True=0.800, Est=0.543±0.252, Error= 32.1%, R-hat=1.5300, ESS=7
+INFO - 
+======================================================================
+INFO - ✓ Completed in 426 seconds (7.1 minutes)
+INFO - ✓ Results saved to flat_JOINT_estimation_results.json
+INFO - ======================================================================

@@ -1,0 +1,74 @@
+INFO - 
+======================================================================
+INFO - GRT-LBA JOINT ESTIMATION - 50K DRAWS
+INFO - Start: 2025-11-10 22:44:33.990496
+INFO - ======================================================================
+INFO - ======================================================================
+INFO - Generating GRT-LBA Data
+INFO - ======================================================================
+INFO - ✓ Generated 1200 trials, Accuracy: 92.8%
+INFO - 
+======================================================================
+INFO - MCMC SAMPLING CONFIGURATION
+INFO -   Sampler: DEMetropolisZ
+INFO -   Draws: 50,000
+INFO -   Tune: 10,000
+INFO -   Chains: 4
+INFO -   Estimated time: ~60 minutes
+INFO - ======================================================================
+INFO - 
+======================================================================
+INFO - JOINT ESTIMATION MODEL
+INFO - ======================================================================
+INFO - ✓ Model built successfully
+Multiprocess sampling (4 chains in 4 jobs)
+INFO - Multiprocess sampling (4 chains in 4 jobs)
+DEMetropolisZ: [v_L_H_correct, v_L_H_error, v_L_V_correct, v_L_V_error, v_R_H_correct, v_R_H_error, v_R_V_correct, v_R_V_error]
+INFO - DEMetropolisZ: [v_L_H_correct, v_L_H_error, v_L_V_correct, v_L_V_error, v_R_H_correct, v_R_H_error, v_R_V_correct, v_R_V_error]
+                                                                                
+  Progress                        Draws   Sampling Speed   Elapsed   Remaining  
+ ────────────────────────────────────────────────────────────────────────────── 
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   60000   34.86 draws/s    0:28:41   0:00:00    
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   60000   34.98 draws/s    0:28:35   0:00:00    
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   60000   35.57 draws/s    0:28:06   0:00:00    
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   60000   34.91 draws/s    0:28:38   0:00:00    
+                                                                                
+Sampling 4 chains for 10_000 tune and 50_000 draw iterations (40_000 + 200_000 draws total) took 1721 seconds.
+INFO - Sampling 4 chains for 10_000 tune and 50_000 draw iterations (40_000 + 200_000 draws total) took 1721 seconds.
+The rhat statistic is larger than 1.01 for some parameters. This indicates problems during sampling. See https://arxiv.org/abs/1903.08008 for details
+INFO - The rhat statistic is larger than 1.01 for some parameters. This indicates problems during sampling. See https://arxiv.org/abs/1903.08008 for details
+The effective sample size per chain is smaller than 100 for some parameters.  A higher number is needed for reliable rhat and ess computation. See https://arxiv.org/abs/1903.08008 for details
+ERROR - The effective sample size per chain is smaller than 100 for some parameters.  A higher number is needed for reliable rhat and ess computation. See https://arxiv.org/abs/1903.08008 for details
+INFO - 
+======================================================================
+INFO - RESULTS SUMMARY
+INFO - ======================================================================
+INFO - 
+                mean     sd  hdi_3%  ...  ess_bulk  ess_tail  r_hat
+v_L_H_correct  4.702  0.450   3.903  ...       7.0      28.0   1.56
+v_L_H_error    0.496  0.175   0.162  ...      12.0      39.0   1.24
+v_L_V_correct  4.654  0.547   3.703  ...       7.0      29.0   1.55
+v_L_V_error    0.417  0.166   0.101  ...      16.0      53.0   1.18
+v_R_H_correct  2.801  0.702   2.378  ...       7.0      29.0   1.53
+v_R_H_error    0.720  0.143   0.429  ...       8.0      31.0   1.41
+v_R_V_correct  2.691  0.269   2.417  ...       5.0      28.0   2.10
+v_R_V_error    0.891  0.081   0.737  ...     272.0    6630.0   1.02
+
+[8 rows x 9 columns]
+INFO - 
+======================================================================
+INFO - PARAMETER RECOVERY ACCURACY
+INFO - ======================================================================
+INFO - v_L_H_correct       : True=3.500, Est=4.702±0.450, Error= 34.3%, R-hat=1.5600, ESS=7
+INFO - v_L_H_error         : True=0.800, Est=0.496±0.175, Error= 38.0%, R-hat=1.2400, ESS=12
+INFO - v_L_V_correct       : True=3.500, Est=4.654±0.547, Error= 33.0%, R-hat=1.5500, ESS=7
+INFO - v_L_V_error         : True=0.800, Est=0.417±0.166, Error= 47.9%, R-hat=1.1800, ESS=16
+INFO - v_R_H_correct       : True=3.500, Est=2.801±0.702, Error= 20.0%, R-hat=1.5300, ESS=7
+INFO - v_R_H_error         : True=0.800, Est=0.720±0.143, Error= 10.0%, R-hat=1.4100, ESS=8
+INFO - v_R_V_correct       : True=3.500, Est=2.691±0.269, Error= 23.1%, R-hat=2.1000, ESS=5
+INFO - v_R_V_error         : True=0.800, Est=0.891±0.081, Error= 11.4%, R-hat=1.0200, ESS=272
+INFO - 
+======================================================================
+INFO - ✓ Completed in 1731 seconds (28.8 minutes)
+INFO - ✓ Results saved to flat_JOINT_50k_results.json
+INFO - ======================================================================

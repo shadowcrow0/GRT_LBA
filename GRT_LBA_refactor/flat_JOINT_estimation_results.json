@@ -1,0 +1,127 @@
+{
+  "joint_estimation": {
+    "summary": {
+      "mean": {
+        "v_L_H_correct": 3.3,
+        "v_L_H_error": 0.725,
+        "v_L_V_correct": 3.365,
+        "v_L_V_error": 0.649,
+        "v_R_H_correct": 4.502,
+        "v_R_H_error": 0.502,
+        "v_R_V_correct": 4.574,
+        "v_R_V_error": 0.543
+      },
+      "sd": {
+        "v_L_H_correct": 1.215,
+        "v_L_H_error": 0.2,
+        "v_L_V_correct": 1.168,
+        "v_L_V_error": 0.183,
+        "v_R_H_correct": 1.267,
+        "v_R_H_error": 0.207,
+        "v_R_V_correct": 1.204,
+        "v_R_V_error": 0.252
+      },
+      "hdi_3%": {
+        "v_L_H_correct": 2.435,
+        "v_L_H_error": 0.301,
+        "v_L_V_correct": 2.658,
+        "v_L_V_error": 0.302,
+        "v_R_H_correct": 2.286,
+        "v_R_H_error": 0.205,
+        "v_R_V_correct": 2.498,
+        "v_R_V_error": 0.203
+      },
+      "hdi_97%": {
+        "v_L_H_correct": 5.467,
+        "v_L_H_error": 1.013,
+        "v_L_V_correct": 5.462,
+        "v_L_V_error": 0.903,
+        "v_R_H_correct": 5.438,
+        "v_R_H_error": 0.845,
+        "v_R_V_correct": 5.5,
+        "v_R_V_error": 0.975
+      },
+      "mcse_mean": {
+        "v_L_H_correct": 0.607,
+        "v_L_H_error": 0.083,
+        "v_L_V_correct": 0.584,
+        "v_L_V_error": 0.076,
+        "v_R_H_correct": 0.631,
+        "v_R_H_error": 0.088,
+        "v_R_V_correct": 0.599,
+        "v_R_V_error": 0.109
+      },
+      "mcse_sd": {
+        "v_L_H_correct": 0.349,
+        "v_L_H_error": 0.045,
+        "v_L_V_correct": 0.337,
+        "v_L_V_error": 0.036,
+        "v_R_H_correct": 0.361,
+        "v_R_H_error": 0.034,
+        "v_R_V_correct": 0.342,
+        "v_R_V_error": 0.048
+      },
+      "ess_bulk": {
+        "v_L_H_correct": 5.0,
+        "v_L_H_error": 7.0,
+        "v_L_V_correct": 7.0,
+        "v_L_V_error": 8.0,
+        "v_R_H_correct": 6.0,
+        "v_R_H_error": 7.0,
+        "v_R_V_correct": 6.0,
+        "v_R_V_error": 7.0
+      },
+      "ess_tail": {
+        "v_L_H_correct": 23.0,
+        "v_L_H_error": 32.0,
+        "v_L_V_correct": 39.0,
+        "v_L_V_error": 26.0,
+        "v_R_H_correct": 28.0,
+        "v_R_H_error": 33.0,
+        "v_R_V_correct": 11.0,
+        "v_R_V_error": 33.0
+      },
+      "r_hat": {
+        "v_L_H_correct": 2.45,
+        "v_L_H_error": 1.5,
+        "v_L_V_correct": 1.54,
+        "v_L_V_error": 1.48,
+        "v_R_H_correct": 1.66,
+        "v_R_H_error": 1.56,
+        "v_R_V_correct": 1.69,
+        "v_R_V_error": 1.53
+      }
+    },
+    "true_params": {
+      "v_L_H_correct": 3.5,
+      "v_L_H_error": 0.8,
+      "v_L_V_correct": 3.5,
+      "v_L_V_error": 0.8,
+      "v_R_H_correct": 3.5,
+      "v_R_H_error": 0.8,
+      "v_R_V_correct": 3.5,
+      "v_R_V_error": 0.8
+    }
+  },
+  "metadata": {
+    "start_time": "2025-11-10 21:36:39.584062",
+    "end_time": "2025-11-10 21:43:45.417178",
+    "elapsed_seconds": 425.833116,
+    "mcmc_config": {
+      "draws": 10000,
+      "tune": 5000,
+      "chains": 4,
+      "cores": 4
+    },
+    "lba_params": {
+      "A": 0.5,
+      "b": 1.0,
+      "s": 1.0
+    },
+    "t0_params": {
+      "t0_left": 0.0,
+      "t0_right": 0.0,
+      "motor_t0": 0.1
+    }
+  }
+}
