@@ -68,6 +68,11 @@ def fast_norm_cdf_numba(x):
     else:
         return p
 
+@jit(nopython=True, fastmath=True, cache=True)
+def lba_pwin_numba(v_w1, v_l1, v_w, v_l2):
+    cdf1 = fast_norm_cdf_numba(v_l1 - v_w1)
+    cdf2 = fast_norm_cdf_numba(v_l2 - v_w2)
+    return cdf1 * cdf2
 
 @jit(nopython=True, fastmath=True, cache=True)
 def lba_pdf_numba(t, v, A, b, s):
@@ -126,6 +131,10 @@ def lba_cdf_numba(t, v, A, b, s):
 # ============================================================================
 # WRAPPER FUNCTIONS (maintain compatibility with original interface)
 # ============================================================================
+
+def lba_pwin(v_w1, v_l1, v_w, v_l2) : 
+    """PDF for win-win LBA (Numba-optimized)"""
+    return lba_pwin_numba(v_w1, v_l1, v_w, v_l2)
 
 def lba_pdf(t, v, A, b, s):
     """PDF for one LBA accumulator (Numba-optimized)"""
@@ -317,22 +326,15 @@ def lba_2dim_likelihood(choice, rt, v_left, v_right, A, b, t0_array, s=1.0):
 
     # Defective PDF and CDF for each dimension
     # Left dimension: v_left_win beats v_left_lose
-    f_left = lba_defective_pdf(t, v_left_win, v_left_lose, A, b, s)
-    F_left = lba_defective_cdf(t, v_left_win, v_left_lose, A, b, s)
+    f_left = lba_pdf(t, v_left_win, v_left_lose, A, b, s)
+    F_left = lba_cdf(t, v_left_win, v_left_lose, A, b, s)
 
     # Right dimension: v_right_win beats v_right_lose
-    f_right = lba_defective_pdf(t, v_right_win, v_right_lose, A, b, s)
-    F_right = lba_defective_cdf(t, v_right_win, v_right_lose, A, b, s)
+    f_right = lba_pdf(t, v_right_win, v_right_lose, A, b, s)
+    F_right = lba_cdf(t, v_right_win, v_right_lose, A, b, s)
 
-    # Two cases for RT = max(RT_L, RT_R) = t:
-    # Case 1: Left finishes at t (slower), Right finished before t (faster)
-    prob_left_slower = f_left * F_right
-
-    # Case 2: Right finishes at t (slower), Left finished before t (faster)
-    prob_right_slower = f_right * F_left
-
-    # Total likelihood = sum of both cases
-    likelihood = prob_left_slower + prob_right_slower
+    p_win = lba_pwin(v_left_win, v_left_lose, v_right_win, v_right_lose) 
+    liklihood =  p_win * (f_left * F_right + f_right * F_left)
 
     return max(likelihood, 1e-10)
 
