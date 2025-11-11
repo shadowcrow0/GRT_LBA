@@ -37,7 +37,9 @@ warnings.filterwarnings('ignore')
 # ============================================================================
 # Global control for CDF calculation method (using dict to avoid global keyword)
 # ============================================================================
-_CDF_MODE = {'use_fast': True}  # Start with fast approximation
+# FIX: Use EXACT CDF integration (2025-11-11)
+# Fast approximation has 50-100% error - see BUG_REPORT_FINAL.md
+_CDF_MODE = {'use_fast': False}  # Use exact integration for correct likelihood
 
 
 # ============================================================================
