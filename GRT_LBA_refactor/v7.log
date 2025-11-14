@@ -1,0 +1,182 @@
+/home/yyc/symmetry/.venv/bin/python /home/yyc/symmetry/GRT_LBA_joe_v7_PRECISION.py
+======================================================================
+GRT-LBA v7 - PRECISION VERSION (increased integration accuracy)
+======================================================================
+Key improvements:
+  1. n_points: 60 → 200 (integration error +223% → -5.4%)
+  2. lower bound: 0.01 → 0.001 (further reduce truncation bias)
+Expected: residual bias +0.24 → ~±0.05 (接近完美)
+======================================================================
+======================================================================
+GRT-LBA with 2 Independent Dimensions - Perceptual Separability Test
+8 basic drift rates with separability constraints
+======================================================================
+
+1. Set up simulation parameters (with perceptual separability):
+   v_tensor shape: (4, 2, 2) [condition, dimension, accumulator]
+
+   8 basic parameters (perceptually separable):
+      Left when H: v1=3.0, v2=1.0
+      Left when V: v1=1.0, v2=3.0
+      Right when H: v1=3.0, v2=1.0
+      Right when V: v1=1.0, v2=3.0
+
+   t0 (non-decision time): 0.2
+
+2. Generate simulated data:
+   Generated 5000 trials
+   Data shape: (5000, 3) [RT, choice, condition]
+   RT range: [0.369, 0.533]
+
+   Condition distribution:
+      Condition 0: 1250 trials
+      Condition 1: 1250 trials
+      Condition 2: 1250 trials
+      Condition 3: 1250 trials
+
+   Choice distribution:
+      Choice 0: 1250 trials
+      Choice 1: 1250 trials
+      Choice 2: 1250 trials
+      Choice 3: 1250 trials
+
+   Accuracy: 100.00% (5000/5000)
+
+3. Build PyMC model:
+   ✓ Model built successfully
+   Number of parameters to estimate: 8 basic drift rates ONLY
+   - 4 Left dimension parameters: v1_L_when_H, v2_L_when_H, v1_L_when_V, v2_L_when_V
+   - 4 Right dimension parameters: v1_R_when_H, v2_R_when_H, v1_R_when_V, v2_R_when_V
+   - A=0.5, b=1.0, t0=0.2, s=1.0 are all FIXED
+   - Perceptual separability: Left/Right drift rates are independent
+
+4. Run multiple MAP estimations (避免局部最優):
+
+======================================================================
+運行 5 次 MAP 估計以避免局部最優
+======================================================================
+
+--- MAP Run 1 ---
+  初始值範例: v1_L_when_H=2.85, v2_L_when_H=0.87
+Warning: gradient not available.(E.g. vars contains discrete variables). MAP estimates may not be accurate for the default parameters. Defaulting to non-gradient minimization 'Powell'.
+MAP ━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   4% 0:10:26 logp = 7,663.7
+  MAP: correct=3.480, error=1.000
+  Log-likelihood: 7674.0
+
+--- MAP Run 2 ---
+  初始值範例: v1_L_when_H=3.29, v2_L_when_H=1.10
+Warning: gradient not available.(E.g. vars contains discrete variables). MAP estimates may not be accurate for the default parameters. Defaulting to non-gradient minimization 'Powell'.
+MAP ━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   4% 0:10:16 logp = 7,664.2
+  MAP: correct=3.475, error=1.000
+  Log-likelihood: 7674.6
+
+--- MAP Run 3 ---
+  初始值範例: v1_L_when_H=2.78, v2_L_when_H=1.14
+Warning: gradient not available.(E.g. vars contains discrete variables). MAP estimates may not be accurate for the default parameters. Defaulting to non-gradient minimization 'Powell'.
+MAP ━╸━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   5% 0:10:07 logp = 7,660.9
+  MAP: correct=3.475, error=1.000
+  Log-likelihood: 7674.6
+
+--- MAP Run 4 ---
+  初始值範例: v1_L_when_H=2.72, v2_L_when_H=0.81
+Warning: gradient not available.(E.g. vars contains discrete variables). MAP estimates may not be accurate for the default parameters. Defaulting to non-gradient minimization 'Powell'.
+MAP ━╸━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   4% 0:10:06 logp = 7,664.2
+  MAP: correct=3.475, error=1.000
+  Log-likelihood: 7674.6
+
+--- MAP Run 5 ---
+  初始值範例: v1_L_when_H=2.95, v2_L_when_H=0.84
+Warning: gradient not available.(E.g. vars contains discrete variables). MAP estimates may not be accurate for the default parameters. Defaulting to non-gradient minimization 'Powell'.
+MAP ━╸━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   4% 0:10:09 logp = 7,660.8
+  MAP: correct=3.475, error=1.000
+  Log-likelihood: 7674.6
+
+======================================================================
+MAP 估計總結
+======================================================================
+最佳解: Run #5
+  Log-likelihood: 7674.6
+  Correct drift avg: 3.475
+  Error drift avg: 1.000
+
+一致性:
+  Correct drift std: 0.0022
+  Error drift std: 0.0001
+  All correct > error: True
+
+   將使用最佳 MAP 解作為 MCMC 的初始值:
+   v1_L_when_H=3.465, v2_L_when_H=1.000
+   v1_L_when_V=1.000, v2_L_when_V=3.488
+   v1_R_when_H=3.466, v2_R_when_H=1.000
+   v1_R_when_V=1.000, v2_R_when_V=3.482
+
+5. Run MCMC sampling:
+   - draws=15000 (quick test run)
+   - tune=1000 (short burn-in)
+   - chains=4 (using 4 CPU cores for parallel sampling)
+   - sampler: DEMetropolisZ
+   - Estimating 8 drift rate parameters (A, b, t0, s are fixed)
+   - Using Paper Equation 1 & 2 (complete PDF/CDF definitions)
+   - initvals: 使用最佳 MAP 解
+   Estimated time: ~15-30 minutes
+
+   Starting sampling...
+Multiprocess sampling (8 chains in 8 jobs)
+DEMetropolisZ: [v1_L_when_H, v2_L_when_H, v1_L_when_V, v2_L_when_V, v1_R_when_H, v2_R_when_H, v1_R_when_V, v2_R_when_V]
+                                                                                           
+  Progress                                   Draws   Sampling Speed   Elapsed   Remaining  
+ ───────────────────────────────────────────────────────────────────────────────────────── 
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   16000   2.73 draws/s     1:37:46   0:00:00    
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   16000   2.77 draws/s     1:36:24   0:00:00    
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   16000   2.69 draws/s     1:39:09   0:00:00    
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   16000   2.69 draws/s     1:39:08   0:00:00    
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   16000   2.71 draws/s     1:38:27   0:00:00    
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   16000   2.69 draws/s     1:39:06   0:00:00    
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   16000   2.71 draws/s     1:38:14   0:00:00    
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   16000   2.69 draws/s     1:39:09   0:00:00    
+                                                                                           
+Sampling 8 chains for 1_000 tune and 15_000 draw iterations (8_000 + 120_000 draws total) took 5950 seconds.
+
+   ✓ MCMC sampling completed!
+
+6. Convergence diagnostics:
+
+   LBA parameters (FIXED - not sampled):
+      A = 0.5 (fixed)
+      b = 1.0 (fixed)
+      t0 = 0.2 (fixed)
+      s = 1.0 (fixed)
+
+   8 Basic Drift Rate Parameters:
+              mean     sd  r_hat  ess_bulk
+v1_L_when_H  3.462  0.024    1.0    3368.0
+v2_L_when_H  1.176  0.649    1.0    2153.0
+v1_L_when_V  1.202  0.670    1.0    2303.0
+v2_L_when_V  3.487  0.023    1.0    2907.0
+v1_R_when_H  3.468  0.024    1.0    3588.0
+v2_R_when_H  1.193  0.662    1.0    2751.0
+v1_R_when_V  1.227  0.664    1.0    2205.0
+v2_R_when_V  3.484  0.023    1.0    3437.0
+
+   ✓ Good convergence! Max R-hat = 1.0000
+
+7. Parameter recovery check:
+
+   Comparing true vs. posterior mean:
+      v1_L_when_H    : True=3.00, Posterior=3.462, Diff=+0.462
+      v2_L_when_H    : True=1.00, Posterior=1.176, Diff=+0.176
+      v1_L_when_V    : True=1.00, Posterior=1.202, Diff=+0.202
+      v2_L_when_V    : True=3.00, Posterior=3.487, Diff=+0.487
+      v1_R_when_H    : True=3.00, Posterior=3.468, Diff=+0.468
+      v2_R_when_H    : True=1.00, Posterior=1.193, Diff=+0.193
+      v1_R_when_V    : True=1.00, Posterior=1.227, Diff=+0.227
+      v2_R_when_V    : True=3.00, Posterior=3.484, Diff=+0.484
+
+   LBA parameters (all FIXED, not estimated):
+      A: Fixed at 0.5
+      b: Fixed at 1.0
+      t0: Fixed at 0.2
+      s: Fixed at 1.0
+
+======================================================================
+✓ GRT-LBA with Perceptual Separability model test completed!
