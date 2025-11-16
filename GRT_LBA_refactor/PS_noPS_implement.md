@@ -113,6 +113,3 @@ Although the 16-parameter model is more flexible, it will be penalized if the ad
 **Experimental setup:**
 Since we generate data *under the PS model*, we expect **Model 1 (PS)** to outperform **Model 2 (Non-PS)**.
 
----
-
-如果你需要，我也可以幫你把這段整理成 figure caption、論文段落、或放入 proposal 的 technical appendix。
