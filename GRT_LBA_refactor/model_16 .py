@@ -1,7 +1,7 @@
 """
-GRT-LBA 4-Choice Recognition Task - REALISTIC VERSION (v7_REALISTIC)
+GRT-LBA 4-Choice Recognition Task - Model 1+ (PS + Single Violation)
 ==================================================================
-雙側刺激辨認任務 with Perceptual Separability (PS):
+雙側刺激辨認任務 with Perceptual Separability PLUS One Targeted Violation
 
 架構：
 - 4 個 conditions (刺激組合): HH, HV, VH, VV
@@ -9,12 +9,17 @@ GRT-LBA 4-Choice Recognition Task - REALISTIC VERSION (v7_REALISTIC)
 - 每個 dimension 在每個時間點有 2 個 accumulators 競爭 (選 H vs 選 V)
 - 最終反應時間 = max(LEFT 決策時間, RIGHT 決策時間) + t0
 
-Perceptual Separability 假設：
-- LEFT dimension 的 drift rates 只依賴 LEFT 刺激（不受 RIGHT 影響）
-- RIGHT dimension 的 drift rates 只依賴 RIGHT 刺激（不受 LEFT 影響）
-- 總共只需要 8 個 drift rate 參數：
-  * LEFT: v1_L_when_H, v2_L_when_H, v1_L_when_V, v2_L_when_V (4 個)
-  * RIGHT: v1_R_when_H, v2_R_when_H, v1_R_when_V, v2_R_when_V (4 個)
+Model 1+ (9 parameters):
+- 8 個基本 PS 參數（與 Model 1 相同）
+- + 1 個 violation 參數: delta_v1_L_V
+  * 測試 LEFT dimension when V 的 PS violation
+  * Based on Model 2 QUICK TEST: 最大 violation 在 v1_L (VH vs VV), diff=0.322
+  * delta_v1_L_V 控制 VH 和 VV 條件下 v1_L 的差異
+
+Hypothesis Testing:
+- If delta_v1_L_V ≈ 0 → PS holds (Model 1)
+- If delta_v1_L_V ≠ 0 → Specific PS violation detected (Model 1+)
+- Compare Model 1 (8) vs Model 1+ (9) vs Model 2 (16) via WAIC
 
 KEY FIXES (v6 - 2025-11-13):
 
@@ -82,15 +87,17 @@ import os  # For file size check when saving .nc
 warnings.filterwarnings('ignore')
 
 print("=" * 70)
-print("Model 2: Non-PS (16 params) - Full Interaction")
+print("Model 1+: PS + Single Violation (9 params)")
 print("=" * 70)
-print("Key improvements:")
-print("  1. n_points: 60 → 200 (integration error +223% → -5.4%)")
-print("  2. lower bound: 0.01 → 0.001 (further reduce truncation bias)")
-print("  3. REALISTIC PARAMETERS:")
-print("     - v_correct: 3.0 → 1.5, v_error: 1.0 → 0.8")
-print("     - b: 1.0 → 1.5, t0: 0.2 → 0.35")
-print("     - Expected: Accuracy 70-85%, RT 0.7-1.3 sec")
+print("Model structure:")
+print("  - 8 basic PS parameters (same as Model 1)")
+print("  - + 1 violation parameter: delta_v1_L_V")
+print("  - Tests specific PS violation: LEFT when V (VH vs VV)")
+print("  - Based on Model 2 QUICK TEST: max violation = 0.322")
+print("")
+print("Hypothesis:")
+print("  - delta_v1_L_V ≈ 0 → PS holds")
+print("  - delta_v1_L_V ≠ 0 → PS violation detected")
 print("=" * 70)
 
 # ============================================================================
@@ -99,6 +106,15 @@ print("=" * 70)
 # FIX: Use EXACT CDF integration (2025-11-11)
 # Fast approximation has 50-100% error - see BUG_REPORT_FINAL.md
 _CDF_MODE = {'use_fast': False}  # Use exact integration for correct likelihood
+
+# ============================================================================
+# Global control for integration precision (SPEED vs ACCURACY tradeoff)
+# ============================================================================
+# PRECISION_MODE options:
+# - 'high': n_points=200 (accurate, slower) - for final MCMC sampling
+# - 'medium': n_points=100 (balanced) - for MAP estimation
+# - 'low': n_points=50 (fast, less accurate) - for quick testing only
+_PRECISION_MODE = {'n_points': 200}  # Default: high precision
 
 
 # ============================================================================
@@ -141,7 +157,7 @@ def lba_pwin_numba_OLD_APPROX(v_w1, v_l1, v_w2, v_l2):
 # NEW: EXACT P(WIN) CALCULATION (v4) - NUMBA-OPTIMIZED Defective PDF Integration
 # ============================================================================
 
-@jit(nopython=True, fastmath=True, cache=True)
+@jit(nopython=True, fastmath=True, cache=True, parallel=False)
 def lba_pwin_1d_numba(v_win, v_lose, A, b, s, t_max=10.0, n_points=200):
     """
     NUMBA-OPTIMIZED: Calculate EXACT P(one accumulator wins in one dimension)
@@ -166,6 +182,12 @@ def lba_pwin_1d_numba(v_win, v_lose, A, b, s, t_max=10.0, n_points=200):
     Returns:
     --------
     float : P(win) in [0, 1]
+
+    Optimization Notes:
+    ------------------
+    - parallel=False: Avoid overhead for small arrays (n_points=200)
+    - fastmath=True: Use faster but slightly less precise math
+    - cache=True: Cache compiled code for faster subsequent calls
     """
     # Generate integration points
     tau = np.linspace(0.0, t_max, n_points)
@@ -236,12 +258,19 @@ def lba_pwin_1d_numba(v_win, v_lose, A, b, s, t_max=10.0, n_points=200):
     return result
 
 
-def lba_pwin_1d_exact(v_win, v_lose, A, b, s, t_max=10.0):
+def lba_pwin_1d_exact(v_win, v_lose, A, b, s, t_max=10.0, n_points=None):
     """
     Wrapper for backward compatibility.
     Calls the Numba-optimized version.
+
+    Parameters:
+    -----------
+    n_points : int or None
+        Number of integration points (None = use global _PRECISION_MODE setting)
     """
-    return lba_pwin_1d_numba(v_win, v_lose, A, b, s, t_max, n_points=60)
+    if n_points is None:
+        n_points = _PRECISION_MODE['n_points']
+    return lba_pwin_1d_numba(v_win, v_lose, A, b, s, t_max, n_points)
 
 
 def lba_pwin_exact(v_w1, v_l1, v_w2, v_l2, A, b, s):
@@ -699,6 +728,57 @@ class GRT_LBA_4Choice_LogLik(pytensor.tensor.Op):
         return self.__class__.__name__
 
 
+class GRT_LBA_4Choice_Pointwise_LogLik(pytensor.tensor.Op):
+    """PyTensor Op for pointwise log-likelihood (for WAIC/LOO calculation)"""
+
+    itypes = [
+        pytensor.tensor.ivector,  # choice
+        pytensor.tensor.dvector,  # RT
+        pytensor.tensor.ivector,  # condition
+        pytensor.tensor.dtensor3,  # v_tensor (4, 2, 2)
+        pytensor.tensor.dscalar,  # A
+        pytensor.tensor.dscalar,  # b
+        pytensor.tensor.dscalar,  # t0
+        pytensor.tensor.dscalar   # s
+    ]
+
+    otypes = [pytensor.tensor.dvector]  # Returns vector of log-likelihoods
+
+    def perform(self, node, inputs, outputs):
+        choice, rt, condition, v_tensor, A, b, t0, s = inputs
+
+        n_trials = len(rt)
+        log_liks = np.zeros(n_trials)
+
+        for i in range(n_trials):
+            cond = int(condition[i])
+            v_left = v_tensor[cond, 0, :]
+            v_right = v_tensor[cond, 1, :]
+
+            lik = lba_2dim_likelihood(
+                choice=choice[i],
+                rt=rt[i],
+                condition=cond,
+                v_left=v_left,
+                v_right=v_right,
+                A=A, b=b, t0=t0, s=s
+            )
+
+            if lik > 0:
+                log_liks[i] = np.log(lik)
+            else:
+                log_liks[i] = -1000.0
+
+        outputs[0][0] = log_liks
+
+    def infer_shape(self, fgraph, node, input_shapes):
+        # Output shape is same as choice/rt vector
+        return [input_shapes[0]]
+
+    def __str__(self):
+        return self.__class__.__name__
+
+
 # ============================================================================
 # MAP 估計函數 (多次運行以避免局部最優)
 # ============================================================================
@@ -932,61 +1012,79 @@ def create_grt_lba_4choice_model(observed_data):
         # Using the true values from simulation - REALISTIC VERSION
         t0 = 0.25  # OPTIMIZED - REALISTIC (increased from 0.2)
 
-        # 16 drift rates - NON-PS (每個 condition 獨立的參數)
-        # NO perceptual separability constraint - allow full interaction
-        # Each condition has its own 4 drift rates (left v1, left v2, right v1, right v2)
+        # 8 basic drift rates for perceptual separability testing
+        # Structure: 2 dimensions × 2 stimuli (H/V) × 2 accumulators (v1/v2)
+        # If perceptually separable, Left drift rates should NOT depend on Right stimulus
+        # and Right drift rates should NOT depend on Left stimulus
 
-        # Condition 0: HH (Left=H, Right=H)
-        v1_L_HH = pm.TruncatedNormal("v1_L_HH", mu=1.8, sigma=2.0, lower=0.001, upper=5.0)
-        v2_L_HH = pm.TruncatedNormal("v2_L_HH", mu=1.5, sigma=2.0, lower=0.001, upper=5.0)
-        v1_R_HH = pm.TruncatedNormal("v1_R_HH", mu=1.8, sigma=2.0, lower=0.001, upper=5.0)
-        v2_R_HH = pm.TruncatedNormal("v2_R_HH", mu=1.5, sigma=2.0, lower=0.001, upper=5.0)
+        # Left dimension drift rates (when stimulus is H or V) - REALISTIC VERSION
+        # v1: support "H" judgment, v2: support "V" judgment
+        # Wider priors with sigma=2.0 to allow more flexibility
+        # v7 FIX: lower=0.001 (was 0.01) to further reduce truncation bias
+        # v7_REALISTIC: mu adjusted to realistic values (1.5 for correct, 0.8 for error)
+        v1_L_when_H = pm.TruncatedNormal("v1_L_when_H", mu=1.8, sigma=2.0, lower=0.001, upper=5.0)  # FIXED: mu=1.2
+        v2_L_when_H = pm.TruncatedNormal("v2_L_when_H", mu=1.5, sigma=2.0, lower=0.001, upper=5.0)  # FIXED: mu=0.9
+        v1_L_when_V = pm.TruncatedNormal("v1_L_when_V", mu=1.5, sigma=2.0, lower=0.001, upper=5.0)  # FIXED: mu=0.9
+        v2_L_when_V = pm.TruncatedNormal("v2_L_when_V", mu=1.8, sigma=2.0, lower=0.001, upper=5.0)  # FIXED: mu=1.2
 
-        # Condition 1: HV (Left=H, Right=V)
-        v1_L_HV = pm.TruncatedNormal("v1_L_HV", mu=1.8, sigma=2.0, lower=0.001, upper=5.0)
-        v2_L_HV = pm.TruncatedNormal("v2_L_HV", mu=1.5, sigma=2.0, lower=0.001, upper=5.0)
-        v1_R_HV = pm.TruncatedNormal("v1_R_HV", mu=1.5, sigma=2.0, lower=0.001, upper=5.0)
-        v2_R_HV = pm.TruncatedNormal("v2_R_HV", mu=1.8, sigma=2.0, lower=0.001, upper=5.0)
+        # Right dimension drift rates (when stimulus is H or V) - REALISTIC VERSION
+        # Wider priors with sigma=2.0 to allow more flexibility
+        # v7 FIX: lower=0.001 (was 0.01) to further reduce truncation bias
+        # FIXED: mu adjusted for realistic accuracy (1.2 for correct, 0.9 for error)
+        v1_R_when_H = pm.TruncatedNormal("v1_R_when_H", mu=1.8, sigma=2.0, lower=0.001, upper=5.0)  # FIXED: mu=1.2
+        v2_R_when_H = pm.TruncatedNormal("v2_R_when_H", mu=1.5, sigma=2.0, lower=0.001, upper=5.0)  # FIXED: mu=0.9
+        v1_R_when_V = pm.TruncatedNormal("v1_R_when_V", mu=1.5, sigma=2.0, lower=0.001, upper=5.0)  # FIXED: mu=0.9
+        v2_R_when_V = pm.TruncatedNormal("v2_R_when_V", mu=1.8, sigma=2.0, lower=0.001, upper=5.0)  # FIXED: mu=1.2
 
-        # Condition 2: VH (Left=V, Right=H)
-        v1_L_VH = pm.TruncatedNormal("v1_L_VH", mu=1.5, sigma=2.0, lower=0.001, upper=5.0)
-        v2_L_VH = pm.TruncatedNormal("v2_L_VH", mu=1.8, sigma=2.0, lower=0.001, upper=5.0)
-        v1_R_VH = pm.TruncatedNormal("v1_R_VH", mu=1.8, sigma=2.0, lower=0.001, upper=5.0)
-        v2_R_VH = pm.TruncatedNormal("v2_R_VH", mu=1.5, sigma=2.0, lower=0.001, upper=5.0)
+        # ==============================================================
+        # MODEL 1+ ADDITION: Violation parameter for LEFT when V
+        # ==============================================================
+        # delta_v1_L_V: Tests if v1_L differs between VH and VV conditions
+        # - If delta ≈ 0 → PS holds (v1_L_when_V same for VH and VV)
+        # - If delta ≠ 0 → PS violation (irrelevant RIGHT dim affects LEFT drift)
+        # Based on Model 2 QUICK TEST: max violation in v1_L (VH vs VV) = 0.322
+        delta_v1_L_V = pm.Normal("delta_v1_L_V", mu=0, sigma=0.3)
 
-        # Condition 3: VV (Left=V, Right=V)
-        v1_L_VV = pm.TruncatedNormal("v1_L_VV", mu=1.5, sigma=2.0, lower=0.001, upper=5.0)
-        v2_L_VV = pm.TruncatedNormal("v2_L_VV", mu=1.8, sigma=2.0, lower=0.001, upper=5.0)
-        v1_R_VV = pm.TruncatedNormal("v1_R_VV", mu=1.5, sigma=2.0, lower=0.001, upper=5.0)
-        v2_R_VV = pm.TruncatedNormal("v2_R_VV", mu=1.8, sigma=2.0, lower=0.001, upper=5.0)
+        # Condition-specific v1_L values for VH and VV:
+        # VH: v1_L = v1_L_when_V - delta/2
+        # VV: v1_L = v1_L_when_V + delta/2
+        # This way: delta = 0 → both equal to v1_L_when_V (PS holds)
+        v1_L_VH = v1_L_when_V - delta_v1_L_V / 2
+        v1_L_VV = v1_L_when_V + delta_v1_L_V / 2
+        # ==============================================================
 
-        # Construct v_tensor WITHOUT perceptual separability constraint
-        # Each condition uses its own independent parameters
+        # Construct v_tensor with PS constraint + one targeted violation
+        # v_tensor[condition, dimension, accumulator]
+        # condition: 0=HH, 1=HV, 2=VH, 3=VV
+        # dimension: 0=Left, 1=Right
+        # accumulator: 0=v1(judge H), 1=v2(judge V)
         v_tensor = pt.zeros((4, 2, 2))
 
-        # Condition 0: HH
-        v_tensor = pt.set_subtensor(v_tensor[0, 0, 0], v1_L_HH)
-        v_tensor = pt.set_subtensor(v_tensor[0, 0, 1], v2_L_HH)
-        v_tensor = pt.set_subtensor(v_tensor[0, 1, 0], v1_R_HH)
-        v_tensor = pt.set_subtensor(v_tensor[0, 1, 1], v2_R_HH)
+        # Condition HH (Left=H, Right=H)
+        v_tensor = pt.set_subtensor(v_tensor[0, 0, 0], v1_L_when_H)  # Left: v1 (judge H)
+        v_tensor = pt.set_subtensor(v_tensor[0, 0, 1], v2_L_when_H)  # Left: v2 (judge V)
+        v_tensor = pt.set_subtensor(v_tensor[0, 1, 0], v1_R_when_H)  # Right: v1 (judge H)
+        v_tensor = pt.set_subtensor(v_tensor[0, 1, 1], v2_R_when_H)  # Right: v2 (judge V)
 
-        # Condition 1: HV
-        v_tensor = pt.set_subtensor(v_tensor[1, 0, 0], v1_L_HV)
-        v_tensor = pt.set_subtensor(v_tensor[1, 0, 1], v2_L_HV)
-        v_tensor = pt.set_subtensor(v_tensor[1, 1, 0], v1_R_HV)
-        v_tensor = pt.set_subtensor(v_tensor[1, 1, 1], v2_R_HV)
+        # Condition HV (Left=H, Right=V)
+        v_tensor = pt.set_subtensor(v_tensor[1, 0, 0], v1_L_when_H)  # Left: v1 (same as HH)
+        v_tensor = pt.set_subtensor(v_tensor[1, 0, 1], v2_L_when_H)  # Left: v2 (same as HH)
+        v_tensor = pt.set_subtensor(v_tensor[1, 1, 0], v1_R_when_V)  # Right: v1 (judge H)
+        v_tensor = pt.set_subtensor(v_tensor[1, 1, 1], v2_R_when_V)  # Right: v2 (judge V)
 
-        # Condition 2: VH
-        v_tensor = pt.set_subtensor(v_tensor[2, 0, 0], v1_L_VH)
-        v_tensor = pt.set_subtensor(v_tensor[2, 0, 1], v2_L_VH)
-        v_tensor = pt.set_subtensor(v_tensor[2, 1, 0], v1_R_VH)
-        v_tensor = pt.set_subtensor(v_tensor[2, 1, 1], v2_R_VH)
+        # Condition VH (Left=V, Right=H)
+        # MODEL 1+: Use v1_L_VH instead of v1_L_when_V
+        v_tensor = pt.set_subtensor(v_tensor[2, 0, 0], v1_L_VH)  # Left: v1 (with violation)
+        v_tensor = pt.set_subtensor(v_tensor[2, 0, 1], v2_L_when_V)  # Left: v2 (PS holds)
+        v_tensor = pt.set_subtensor(v_tensor[2, 1, 0], v1_R_when_H)  # Right: v1 (same as HH)
+        v_tensor = pt.set_subtensor(v_tensor[2, 1, 1], v2_R_when_H)  # Right: v2 (same as HH)
 
-        # Condition 3: VV
-        v_tensor = pt.set_subtensor(v_tensor[3, 0, 0], v1_L_VV)
-        v_tensor = pt.set_subtensor(v_tensor[3, 0, 1], v2_L_VV)
-        v_tensor = pt.set_subtensor(v_tensor[3, 1, 0], v1_R_VV)
-        v_tensor = pt.set_subtensor(v_tensor[3, 1, 1], v2_R_VV)
+        # Condition VV (Left=V, Right=V)
+        # MODEL 1+: Use v1_L_VV instead of v1_L_when_V
+        v_tensor = pt.set_subtensor(v_tensor[3, 0, 0], v1_L_VV)  # Left: v1 (with violation)
+        v_tensor = pt.set_subtensor(v_tensor[3, 0, 1], v2_L_when_V)  # Left: v2 (PS holds)
+        v_tensor = pt.set_subtensor(v_tensor[3, 1, 0], v1_R_when_V)  # Right: v1 (same as HV)
+        v_tensor = pt.set_subtensor(v_tensor[3, 1, 1], v2_R_when_V)  # Right: v2 (same as HV)
 
         # Extract data
         rt_data = observed_data[:, 0]
@@ -1004,7 +1102,7 @@ def create_grt_lba_4choice_model(observed_data):
         t0_tensor = pt.as_tensor_variable(t0, dtype='float64')
         s_tensor = pt.as_tensor_variable(s, dtype='float64')
 
-        # Call Op
+        # Call Op for total log-likelihood
         grt_lba_op = GRT_LBA_4Choice_LogLik()
         log_lik = grt_lba_op(
             choice_obs, rt_obs, condition_obs,
@@ -1012,6 +1110,16 @@ def create_grt_lba_4choice_model(observed_data):
         )
 
         pm.Potential("obs", log_lik)
+
+        # Call Op for pointwise log-likelihood (for WAIC/LOO)
+        grt_lba_pointwise_op = GRT_LBA_4Choice_Pointwise_LogLik()
+        log_lik_pointwise = grt_lba_pointwise_op(
+            choice_obs, rt_obs, condition_obs,
+            v_tensor, A_tensor, b_tensor, t0_tensor, s_tensor
+        )
+
+        # Register as Deterministic for posterior recording
+        pm.Deterministic("log_likelihood", log_lik_pointwise)
 
     return grt_lba_model
 
@@ -1116,53 +1224,83 @@ if __name__ == "__main__":
     print("\n3. Build PyMC model:")
     model = create_grt_lba_4choice_model(data)
     print("   ✓ Model built successfully")
-    print(f"   Number of parameters to estimate: 16 drift rates (Non-PS model)")
-    print(f"   - 4 parameters per condition (HH, HV, VH, VV)")
-    print(f"   - NO perceptual separability constraint")
+    print(f"   Number of parameters to estimate: 8 basic drift rates ONLY")
+    print(f"   - 4 Left dimension parameters: v1_L_when_H, v2_L_when_H, v1_L_when_V, v2_L_when_V")
+    print(f"   - 4 Right dimension parameters: v1_R_when_H, v2_R_when_H, v1_R_when_V, v2_R_when_V")
     print(f"   - A=0.5, b=1.5, t0=0.35, s=1.0 are all FIXED (REALISTIC)")
-    print(f"   - Full interaction model: allows cross-dimensional effects")
+    print(f"   - Perceptual separability: Left/Right drift rates are independent")
 
-    # 4. Skip MAP estimation for 16-parameter model (too many parameters)
-    print("\n4. Skipping MAP estimation for 16-parameter model:")
-    print("   (Using default initialization for MCMC)")
-    print("   Reason: 16 parameters make MAP estimation slow and unreliable")
+    # 4. Run multiple MAP estimations to find best starting point
+    print("\n4. Run multiple MAP estimations (避免局部最優):")
 
-    # Use None for initvals (let PyMC use default initialization)
-    map_initvals = None
+    # Use medium precision for faster MAP estimation (2x speedup)
+    print("   Using medium precision (n_points=100) for faster MAP estimation...")
+    _PRECISION_MODE['n_points'] = 100
+
+    best_map, all_map_results, map_consistency = run_multiple_map_8param(
+        model=model,
+        data=data,
+        n_runs=5,
+        solution_hint='high_correct'
+    )
+
+    # Restore high precision for MCMC
+    _PRECISION_MODE['n_points'] = 200
+    print("   ✓ MAP completed. Restoring high precision (n_points=200) for MCMC...")
+
+    # Use best MAP as initial values for MCMC
+    map_initvals = best_map['map']
+    # MODEL 1+: Add delta_v1_L_V initial value (start at 0, PS hypothesis)
+    map_initvals['delta_v1_L_V'] = 0.0
+
+    print("\n   將使用最佳 MAP 解作為 MCMC 的初始值:")
+    print(f"   v1_L_when_H={map_initvals['v1_L_when_H']:.3f}, v2_L_when_H={map_initvals['v2_L_when_H']:.3f}")
+    print(f"   v1_L_when_V={map_initvals['v1_L_when_V']:.3f}, v2_L_when_V={map_initvals['v2_L_when_V']:.3f}")
+    print(f"   v1_R_when_H={map_initvals['v1_R_when_H']:.3f}, v2_R_when_H={map_initvals['v2_R_when_H']:.3f}")
+    print(f"   v1_R_when_V={map_initvals['v1_R_when_V']:.3f}, v2_R_when_V={map_initvals['v2_R_when_V']:.3f}")
+    print(f"   delta_v1_L_V={map_initvals['delta_v1_L_V']:.3f} (MODEL 1+: violation parameter)")
 
     # 5. MCMC sampling
     print("\n5. Run MCMC sampling:")
-    print("   - draws=15000 (quick test run)")
-    print("   - tune=1000 (short burn-in)")
-    print("   - chains=4 (using 4 CPU cores for parallel sampling)")
+
+    # Auto-detect number of available CPU cores
+    import multiprocessing
+    n_cores = multiprocessing.cpu_count()
+    n_chains = min(n_cores, 8)  # Use up to 8 chains (or available cores)
+
+    print(f"   - Detected {n_cores} CPU cores")
+    print(f"   - Using {n_chains} chains and {n_chains} cores")
+    print("   - draws=30000 (extended for better convergence)")
+    print("   - tune=10000 (extended burn-in for better convergence)")
     print("   - sampler: DEMetropolisZ")
-    print("   - Estimating 16 drift rate parameters - Non-PS model (A, b, t0, s are fixed)")
+    print("   - Estimating 9 parameters: 8 basic + 1 violation (delta_v1_L_V)")
     print("   - Using Paper Equation 1 & 2 (complete PDF/CDF definitions)")
-    print("   - initvals: Default (no MAP pre-estimation)")
-    print("   Estimated time: ~15-30 minutes")
+    print("   - initvals: 使用最佳 MAP 解")
+    print(f"   Estimated time: ~{40//n_chains*4}-{60//n_chains*4} minutes (with {n_chains} cores)")
     print("\n   Starting sampling...")
 
     with model:
-        # Sample all 16 drift rate parameters (Non-PS model)
+        # MODEL 1+: Sample 9 parameters (8 basic + 1 violation parameter)
         vars_to_sample = [
-            model.v1_L_HH, model.v2_L_HH, model.v1_R_HH, model.v2_R_HH,
-            model.v1_L_HV, model.v2_L_HV, model.v1_R_HV, model.v2_R_HV,
-            model.v1_L_VH, model.v2_L_VH, model.v1_R_VH, model.v2_R_VH,
-            model.v1_L_VV, model.v2_L_VV, model.v1_R_VV, model.v2_R_VV
+            model.v1_L_when_H, model.v2_L_when_H,
+            model.v1_L_when_V, model.v2_L_when_V,
+            model.v1_R_when_H, model.v2_R_when_H,
+            model.v1_R_when_V, model.v2_R_when_V,
+            model.delta_v1_L_V  # MODEL 1+: violation parameter
         ]
 
         # Use trapezoidal integration for better accuracy
         _CDF_MODE['use_fast'] = False
 
         trace = pm.sample(
-            draws=15000,     # Quick test run
-            tune=1000,       # Short burn-in period
-            chains=8,        # Using 8 chains for better convergence diagnostics
+            draws=30000,     # Extended for better convergence
+            tune=10000,      # Extended burn-in period for better convergence
+            chains=n_chains,        # Use all available cores
             step=pm.DEMetropolisZ(vars_to_sample),
             initvals=map_initvals,  # Use best MAP solution as starting point
             return_inferencedata=True,
             progressbar=True,
-            cores=8          # Using 8 CPU cores for parallel sampling
+            cores=n_chains          # Match cores to chains for full parallelization
         )
 
     print("\n   ✓ MCMC sampling completed!")
@@ -1171,23 +1309,30 @@ if __name__ == "__main__":
     print("\n6. Convergence diagnostics:")
     import arviz as az
 
-    print("\n   LBA parameters (FIXED - not sampled):")
+    print("\n   LBA parameters (FIXED - not sampled) - REALISTIC VERSION:")
     print(f"      A = 0.5 (fixed)")
-    print(f"      b = 1.5 (fixed)")
-    print(f"      t0 = 0.25 (fixed)")
+    print(f"      b = 1.5 (fixed, REALISTIC)")
+    print(f"      t0 = 0.35 (fixed, REALISTIC)")
     print(f"      s = 1.0 (fixed)")
 
     # Check drift rate parameters
-    print("\n   16 Drift Rate Parameters (Non-PS model):")
-    var_names_list = [
-        'v1_L_HH', 'v2_L_HH', 'v1_R_HH', 'v2_R_HH',
-        'v1_L_HV', 'v2_L_HV', 'v1_R_HV', 'v2_R_HV',
-        'v1_L_VH', 'v2_L_VH', 'v1_R_VH', 'v2_R_VH',
-        'v1_L_VV', 'v2_L_VV', 'v1_R_VV', 'v2_R_VV'
-    ]
+    print("\n   9 Parameters (8 Basic + 1 Violation):")
+    var_names_list = ['v1_L_when_H', 'v2_L_when_H', 'v1_L_when_V', 'v2_L_when_V',
+                      'v1_R_when_H', 'v2_R_when_H', 'v1_R_when_V', 'v2_R_when_V',
+                      'delta_v1_L_V']  # MODEL 1+: violation parameter
 
     drift_summary = az.summary(trace, var_names=var_names_list)
     print(drift_summary[['mean', 'sd', 'r_hat', 'ess_bulk']])
+
+    # MODEL 1+: Report violation parameter specifically
+    delta_mean = trace.posterior['delta_v1_L_V'].values.mean()
+    delta_std = trace.posterior['delta_v1_L_V'].values.std()
+    print(f"\n   🎯 PS Violation Parameter:")
+    print(f"      delta_v1_L_V = {delta_mean:.3f} ± {delta_std:.3f}")
+    if abs(delta_mean) < 0.1:
+        print(f"      → PS holds (delta ≈ 0)")
+    else:
+        print(f"      → PS violation detected (delta ≠ 0)")
 
     # Check convergence
     max_rhat = drift_summary['r_hat'].max()
@@ -1199,38 +1344,42 @@ if __name__ == "__main__":
         print(f"\n   ⚠ Need more sampling. Max R-hat = {max_rhat:.4f}")
 
     # 7. Parameter recovery check
-    print("\n7. Parameter recovery check (comparing to PS true values):")
+    print("\n7. Parameter recovery check:")
 
-    # For Non-PS model, we compare estimated parameters to the PS structure
-    # Note: Data was generated with PS constraint, so we expect:
-    # HH and HV should have similar LEFT params (both have Left=H)
-    # HH and VH should have similar RIGHT params (both have Right=H)
+    true_params = {
+        'v1_L_when_H': v1_L_H_true,
+        'v2_L_when_H': v2_L_H_true,
+        'v1_L_when_V': v1_L_V_true,
+        'v2_L_when_V': v2_L_V_true,
+        'v1_R_when_H': v1_R_H_true,
+        'v2_R_when_H': v2_R_H_true,
+        'v1_R_when_V': v1_R_V_true,
+        'v2_R_when_V': v2_R_V_true
+    }
 
-    print("\n   Expected parameter structure (if data follows PS):")
-    print(f"      Left when H (conditions HH, HV): v1~{v1_L_H_true:.2f}, v2~{v2_L_H_true:.2f}")
-    print(f"      Left when V (conditions VH, VV): v1~{v1_L_V_true:.2f}, v2~{v2_L_V_true:.2f}")
-    print(f"      Right when H (conditions HH, VH): v1~{v1_R_H_true:.2f}, v2~{v2_R_H_true:.2f}")
-    print(f"      Right when V (conditions HV, VV): v1~{v1_R_V_true:.2f}, v2~{v2_R_V_true:.2f}")
-
-    print("\n   Posterior means for 16 parameters:")
-    for param_name in var_names_list:
+    print("\n   Comparing true vs. posterior mean:")
+    for param_name, true_val in true_params.items():
         post_val = trace.posterior[param_name].values.mean()
-        print(f"      {param_name:10s}: {post_val:.3f}")
+        diff = post_val - true_val
+        print(f"      {param_name:15s}: True={true_val:.2f}, Posterior={post_val:.3f}, Diff={diff:+.3f}")
 
     print("\n   LBA parameters (all FIXED, not estimated) - REALISTIC VERSION:")
-    print(f"\n   LBA parameters (all FIXED):")
     print(f"      A: Fixed at 0.5")
-    print(f"      b: Fixed at 1.5")
-    print(f"      t0: Fixed at 0.25")
+    print(f"      b: Fixed at 1.5 (REALISTIC, was 1.0)")
+    print(f"      t0: Fixed at 0.35 (REALISTIC, was 0.2)")
     print(f"      s: Fixed at 1.0")
 
     # 8. Save trace to NetCDF
     print("\n8. Save posterior trace to NetCDF:")
-    output_file = "model2_NonPS_trace.nc"
+    output_file = "model1plus_PS_plus1_trace.nc"
     trace.to_netcdf(output_file)
     print(f"   ✓ Trace saved to: {output_file}")
     print(f"   File size: {os.path.getsize(output_file) / 1024:.1f} KB")
 
     print("\n" + "="*70)
-    print("✓ Model 2: Non-PS (16 params) - Full Interaction completed!")
+    print("✓ Model 1+: PS + Single Violation (9 params) completed!")
     print("="*70)
+    print("\nNext steps:")
+    print("  1. Check delta_v1_L_V posterior above")
+    print("  2. Run Model1_PS_8param.py (baseline)")
+    print("  3. Compare via WAIC: Model1 (8) vs Model1+ (9) vs Model2 (16)")
