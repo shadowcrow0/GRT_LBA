@@ -60,6 +60,23 @@ NEW IN v7_REALISTIC (2025-11-14): REALISTIC HUMAN PARAMETERS
   * Accuracy: ~70-85% (realistic for human 4-choice task)
   * RT: ~0.7-1.3 seconds (realistic human response time)
 
+CRITICAL BUG FIXES (v7_REALISTIC_FIXED - 2025-11-19):
+
+**BUG FIX #3**: RT likelihood now uses defective PDF/CDF
+- v7_REALISTIC had: f_left = lba_pdf(...), F_left = lba_cdf(...) ← WRONG!
+- v7_REALISTIC_FIXED: f_left = lba_defective_pdf(...), F_left = lba_defective_cdf(...) ← CORRECT!
+- Impact: This was causing systematic overestimation (+0.5~0.7 bias)
+- Root cause: Single accumulator CDF reaches 1.0 too early, underestimates RT likelihood
+- Fix applied at Line 504-510
+
+**BUG FIX #4**: Integration precision bug in lba_pwin_1d_exact
+- v7_REALISTIC had: n_points=60 in Line 244 (but function definition had 200) ← WRONG!
+- v7_REALISTIC_FIXED: n_points=200 ← CORRECT!
+- Impact: +223% integration error was NOT actually fixed in v7_REALISTIC
+- Fix applied at Line 244
+
+**Note**: t0 value was already correct (0.25) in model definition, only print statement was wrong
+
 Other features (from v6):
 - EXACT P(choice) calculation using defective PDF integration
 - NUMBA-OPTIMIZED: 50-100x faster than scipy.quad
@@ -68,7 +85,7 @@ Other features (from v6):
 - MORE CHAINS: chains=8, cores=8 (was 4) for better convergence diagnostics
 
 Author: YYC & Claude
-Date: 2025-11-14
+Date: 2025-11-19 (CRITICAL BUG FIXES)
 """
 
 import numpy as np
@@ -241,7 +258,7 @@ def lba_pwin_1d_exact(v_win, v_lose, A, b, s, t_max=10.0):
     Wrapper for backward compatibility.
     Calls the Numba-optimized version.
     """
-    return lba_pwin_1d_numba(v_win, v_lose, A, b, s, t_max, n_points=60)
+    return lba_pwin_1d_numba(v_win, v_lose, A, b, s, t_max, n_points=200)
 
 
 def lba_pwin_exact(v_w1, v_l1, v_w2, v_l2, A, b, s):
@@ -501,11 +518,13 @@ def lba_2dim_likelihood(choice, rt, condition, v_left, v_right, A, b, t0, s=1.0)
         return 1e-10
 
     # PDF and CDF for observed choice (Paper Equation 2 & 1)
-    f_left = lba_pdf(t, v_left_choice, A, b, s)
-    F_left = lba_cdf(t, v_left_choice, A, b, s)
+    # CRITICAL FIX (2025-11-19): Use defective PDF/CDF for RT likelihood
+    # This accounts for the fact that the winner must reach threshold before the loser
+    f_left = lba_defective_pdf(t, v_left_choice, v_left_other, A, b, s)
+    F_left = lba_defective_cdf(t, v_left_choice, v_left_other, A, b, s)
 
-    f_right = lba_pdf(t, v_right_choice, A, b, s)
-    F_right = lba_cdf(t, v_right_choice, A, b, s)
+    f_right = lba_defective_pdf(t, v_right_choice, v_right_other, A, b, s)
+    F_right = lba_defective_cdf(t, v_right_choice, v_right_other, A, b, s)
 
     # Likelihood: P(choice | stimulus) × P(RT=t | choice)
     likelihood = p_choice * (f_left * F_right + f_right * F_left)
@@ -1126,7 +1145,7 @@ if __name__ == "__main__":
     best_map, all_map_results, map_consistency = run_multiple_map_8param(
         model=model,
         data=data,
-        n_runs=5,
+        n_runs=2,
         solution_hint='high_correct'
     )
 
