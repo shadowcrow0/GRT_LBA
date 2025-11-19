@@ -55,7 +55,7 @@ NEW IN v7_REALISTIC (2025-11-14): REALISTIC HUMAN PARAMETERS
   * v_correct = 1.5 (降低 from 3.0)
   * v_error = 0.8 (提高 from 1.0)
   * b = 1.5 (提高 from 1.0)
-  * t0 = 0.35 (提高 from 0.2)
+  * t0 = 0.25 (提高 from 0.2)
 - Expected results:
   * Accuracy: ~70-85% (realistic for human 4-choice task)
   * RT: ~0.7-1.3 seconds (realistic human response time)
@@ -89,7 +89,7 @@ print("  1. n_points: 60 → 200 (integration error +223% → -5.4%)")
 print("  2. lower bound: 0.01 → 0.001 (further reduce truncation bias)")
 print("  3. REALISTIC PARAMETERS:")
 print("     - v_correct: 3.0 → 1.5, v_error: 1.0 → 0.8")
-print("     - b: 1.0 → 1.5, t0: 0.2 → 0.35")
+print("     - b: 1.0 → 1.5, t0: 0.2 → 0.25")
 print("     - Expected: Accuracy 70-85%, RT 0.7-1.3 sec")
 print("=" * 70)
 
@@ -796,7 +796,7 @@ def run_map_estimation_8param(model, initvals, data, run_id, maxeval=10000):
         v_tensor=v_tensor_map,
         A=0.5,
         b=1.0,
-        t0=0.2,
+        t0=0.25,
         s=1.0
     )
 
@@ -1118,7 +1118,7 @@ if __name__ == "__main__":
     print(f"   Number of parameters to estimate: 8 basic drift rates ONLY")
     print(f"   - 4 Left dimension parameters: v1_L_when_H, v2_L_when_H, v1_L_when_V, v2_L_when_V")
     print(f"   - 4 Right dimension parameters: v1_R_when_H, v2_R_when_H, v1_R_when_V, v2_R_when_V")
-    print(f"   - A=0.5, b=1.5, t0=0.35, s=1.0 are all FIXED (REALISTIC)")
+    print(f"   - A=0.5, b=1.5, t0=0.25, s=1.0 are all FIXED (REALISTIC)")
     print(f"   - Perceptual separability: Left/Right drift rates are independent")
 
     # 4. Run multiple MAP estimations to find best starting point
@@ -1182,7 +1182,7 @@ if __name__ == "__main__":
     print("\n   LBA parameters (FIXED - not sampled) - REALISTIC VERSION:")
     print(f"      A = 0.5 (fixed)")
     print(f"      b = 1.5 (fixed, REALISTIC)")
-    print(f"      t0 = 0.35 (fixed, REALISTIC)")
+    print(f"      t0 = 0.25 (fixed, REALISTIC)")
     print(f"      s = 1.0 (fixed)")
 
     # Check drift rate parameters
@@ -1225,7 +1225,7 @@ if __name__ == "__main__":
     print("\n   LBA parameters (all FIXED, not estimated) - REALISTIC VERSION:")
     print(f"      A: Fixed at 0.5")
     print(f"      b: Fixed at 1.5 (REALISTIC, was 1.0)")
-    print(f"      t0: Fixed at 0.35 (REALISTIC, was 0.2)")
+    print(f"      t0: Fixed at 0.25 (REALISTIC, was 0.2)")
     print(f"      s: Fixed at 1.0")
 
     # 8. Save trace to NetCDF
