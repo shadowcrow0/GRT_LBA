@@ -105,6 +105,10 @@ print("     - Expected: Accuracy 70-85%, RT 0.7-1.3 sec")
 print("\n  SYMMETRIC PS DESIGN:")
 print("     - 10 params: 8 drift rates + 2 delta (delta_L, delta_R)")
 print("     - Tests PS violations in BOTH Left and Right dimensions")
+print("\n  BAYES FACTOR ANALYSIS:")
+print("     - Uses Savage-Dickey density ratio method")
+print("     - Tests H0: delta=0 (PS holds) vs H1: delta≠0 (PS violated)")
+print("     - Interpretation: Kass & Raftery (1995) guidelines")
 print("=" * 70)
 
 # ============================================================================
@@ -1345,6 +1349,30 @@ if __name__ == "__main__":
     delta_R_std = delta_R_samples.std()
     delta_R_hdi = az.hdi(trace, var_names=['delta_v1_R_H'], hdi_prob=0.95)
 
+    # ===== BAYES FACTOR ANALYSIS (Savage-Dickey Density Ratio) =====
+    # Tests: H0: delta = 0 (PS holds) vs H1: delta ≠ 0 (PS violated)
+    # BF10 = posterior_density(0) / prior_density(0)
+
+    from scipy.stats import gaussian_kde, norm as scipy_norm
+
+    # Prior density at delta=0: Normal(mu=0, sigma=0.15)
+    prior_sigma = 0.15
+    prior_density_at_zero = scipy_norm.pdf(0, loc=0, scale=prior_sigma)
+
+    # Posterior density at delta=0 (using KDE)
+    kde_L = gaussian_kde(delta_L_samples)
+    posterior_density_L_at_zero = kde_L.evaluate(0)[0]
+
+    kde_R = gaussian_kde(delta_R_samples)
+    posterior_density_R_at_zero = kde_R.evaluate(0)[0]
+
+    # Bayes Factor BF10 (in favor of H1: delta ≠ 0)
+    BF10_L = posterior_density_L_at_zero / prior_density_at_zero
+    BF01_L = 1.0 / BF10_L  # BF01 (in favor of H0: delta = 0)
+
+    BF10_R = posterior_density_R_at_zero / prior_density_at_zero
+    BF01_R = 1.0 / BF10_R
+
     # Bayesian hypothesis testing for delta_L
     p_deltaL_positive = (delta_L_samples > 0).mean()
     p_deltaL_negative = (delta_L_samples < 0).mean()
@@ -1365,6 +1393,41 @@ if __name__ == "__main__":
     print(f"      delta_R = {delta_R_mean:.3f} ± {delta_R_std:.3f}")
     print(f"      95% HDI: [{delta_R_hdi['delta_v1_R_H'].values[0]:.3f}, {delta_R_hdi['delta_v1_R_H'].values[1]:.3f}]")
 
+    # Bayes Factor interpretation (Kass & Raftery 1995)
+    def interpret_BF10(bf10):
+        """Interpret Bayes Factor (Kass & Raftery 1995)"""
+        if bf10 > 100:
+            return "Decisive evidence for H1 (PS violated)"
+        elif bf10 > 30:
+            return "Very strong evidence for H1 (PS violated)"
+        elif bf10 > 10:
+            return "Strong evidence for H1 (PS violated)"
+        elif bf10 > 3:
+            return "Substantial evidence for H1 (PS violated)"
+        elif bf10 > 1:
+            return "Weak evidence for H1 (PS violated)"
+        elif bf10 > 1/3:
+            return "Anecdotal evidence (inconclusive)"
+        elif bf10 > 1/10:
+            return "Substantial evidence for H0 (PS holds)"
+        elif bf10 > 1/30:
+            return "Strong evidence for H0 (PS holds)"
+        elif bf10 > 1/100:
+            return "Very strong evidence for H0 (PS holds)"
+        else:
+            return "Decisive evidence for H0 (PS holds)"
+
+    print(f"\n   📊 Bayes Factor Analysis (Savage-Dickey Density Ratio):")
+    print(f"      Testing H0: delta = 0 (PS holds) vs H1: delta ≠ 0 (PS violated)")
+    print(f"\n   LEFT dimension (delta_L):")
+    print(f"      BF10 = {BF10_L:.3f}  (evidence for PS violation)")
+    print(f"      BF01 = {BF01_L:.3f}  (evidence for PS holding)")
+    print(f"      → {interpret_BF10(BF10_L)}")
+    print(f"\n   RIGHT dimension (delta_R):")
+    print(f"      BF10 = {BF10_R:.3f}  (evidence for PS violation)")
+    print(f"      BF01 = {BF01_R:.3f}  (evidence for PS holding)")
+    print(f"      → {interpret_BF10(BF10_R)}")
+
     print(f"\n   📊 Bayesian Hypothesis Testing (delta_L):")
     print(f"      P(delta_L > 0 | data) = {p_deltaL_positive:.3f}")
     print(f"      P(delta_L < 0 | data) = {p_deltaL_negative:.3f}")
@@ -1381,21 +1444,48 @@ if __name__ == "__main__":
     hdi_L_contains_zero = (delta_L_hdi['delta_v1_L_V'].values[0] < 0 < delta_L_hdi['delta_v1_L_V'].values[1])
     hdi_R_contains_zero = (delta_R_hdi['delta_v1_R_H'].values[0] < 0 < delta_R_hdi['delta_v1_R_H'].values[1])
 
-    print(f"\n   Interpretation:")
+    print(f"\n   📝 Overall Interpretation:")
+    print(f"\n   LEFT dimension (delta_L):")
+    # HDI
     if not hdi_L_contains_zero:
-        print(f"   ✅ delta_L: 95% HDI excludes 0 → Strong evidence for PS violation in Left dimension!")
+        print(f"      ✅ HDI excludes 0 → Evidence for PS violation")
     else:
-        print(f"   ⚠️  delta_L: 95% HDI contains 0 → Weak evidence for PS violation in Left dimension")
-
-    if not hdi_R_contains_zero:
-        print(f"   ✅ delta_R: 95% HDI excludes 0 → Strong evidence for PS violation in Right dimension!")
+        print(f"      ⚠️  HDI contains 0 → Inconclusive")
+    # Bayes Factor
+    if BF10_L > 10:
+        print(f"      ✅ BF10 = {BF10_L:.1f} > 10 → Strong evidence for PS violation")
+    elif BF10_L > 3:
+        print(f"      ✓ BF10 = {BF10_L:.1f} > 3 → Substantial evidence for PS violation")
+    elif BF01_L > 10:
+        print(f"      ❌ BF01 = {BF01_L:.1f} > 10 → Strong evidence PS holds (delta=0)")
+    elif BF01_L > 3:
+        print(f"      ⚠️  BF01 = {BF01_L:.1f} > 3 → Substantial evidence PS holds")
     else:
-        print(f"   ⚠️  delta_R: 95% HDI contains 0 → Weak evidence for PS violation in Right dimension")
-
+        print(f"      ⚠️  BF10 = {BF10_L:.1f} → Evidence inconclusive")
+    # Posterior probability
     if p_deltaL_positive > 0.95:
-        print(f"   ✅ delta_L: P(delta_L > 0) = {p_deltaL_positive:.3f} > 0.95 → Strong positive PS violation")
+        print(f"      ✅ P(delta_L > 0) = {p_deltaL_positive:.3f} > 0.95 → Positive PS violation")
+
+    print(f"\n   RIGHT dimension (delta_R):")
+    # HDI
+    if not hdi_R_contains_zero:
+        print(f"      ✅ HDI excludes 0 → Evidence for PS violation")
+    else:
+        print(f"      ⚠️  HDI contains 0 → Inconclusive")
+    # Bayes Factor
+    if BF10_R > 10:
+        print(f"      ✅ BF10 = {BF10_R:.1f} > 10 → Strong evidence for PS violation")
+    elif BF10_R > 3:
+        print(f"      ✓ BF10 = {BF10_R:.1f} > 3 → Substantial evidence for PS violation")
+    elif BF01_R > 10:
+        print(f"      ❌ BF01 = {BF01_R:.1f} > 10 → Strong evidence PS holds (delta=0)")
+    elif BF01_R > 3:
+        print(f"      ⚠️  BF01 = {BF01_R:.1f} > 3 → Substantial evidence PS holds")
+    else:
+        print(f"      ⚠️  BF10 = {BF10_R:.1f} → Evidence inconclusive")
+    # Posterior probability
     if p_deltaR_positive > 0.95:
-        print(f"   ✅ delta_R: P(delta_R > 0) = {p_deltaR_positive:.3f} > 0.95 → Strong positive PS violation")
+        print(f"      ✅ P(delta_R > 0) = {p_deltaR_positive:.3f} > 0.95 → Positive PS violation")
 
     # Check convergence with detailed diagnostics
     max_rhat = drift_summary['r_hat'].max()
@@ -1467,23 +1557,56 @@ if __name__ == "__main__":
     print(f"\n   Recovery Errors:")
     print(f"      delta_L error: {abs(delta_L_mean - delta_v1_L_V_true):.3f}")
     print(f"      delta_R error: {abs(delta_R_mean - delta_v1_R_H_true):.3f}")
+    print(f"\n   Bayes Factor (H1: delta≠0 vs H0: delta=0):")
+    print(f"      delta_L: BF10 = {BF10_L:.2f}, BF01 = {BF01_L:.2f}")
+    print(f"      delta_R: BF10 = {BF10_R:.2f}, BF01 = {BF01_R:.2f}")
 
-    # Success criteria
-    success_L = (not hdi_L_contains_zero and delta_v1_L_V_true != 0) or (hdi_L_contains_zero and delta_v1_L_V_true == 0)
-    success_R = (not hdi_R_contains_zero and delta_v1_R_H_true != 0) or (hdi_R_contains_zero and delta_v1_R_H_true == 0)
+    # Success criteria (using multiple evidence sources)
+    # HDI criterion
+    hdi_success_L = (not hdi_L_contains_zero and delta_v1_L_V_true != 0) or (hdi_L_contains_zero and delta_v1_L_V_true == 0)
+    hdi_success_R = (not hdi_R_contains_zero and delta_v1_R_H_true != 0) or (hdi_R_contains_zero and delta_v1_R_H_true == 0)
+
+    # Bayes Factor criterion (BF > 3 for detection, BF < 1/3 for accepting null)
+    if delta_v1_L_V_true != 0:
+        bf_success_L = BF10_L > 3  # Should detect violation
+    else:
+        bf_success_L = BF01_L > 3  # Should accept PS (no violation)
+
+    if delta_v1_R_H_true != 0:
+        bf_success_R = BF10_R > 3  # Should detect violation
+    else:
+        bf_success_R = BF01_R > 3  # Should accept PS (no violation)
 
     print(f"\n   Detection Results:")
-    if success_L and not hdi_L_contains_zero:
-        print(f"   ✅ delta_L: Model correctly detected PS violation in Left dimension")
-    elif success_L and hdi_L_contains_zero:
-        print(f"   ✅ delta_L: Model correctly accepted PS in Left dimension")
+    print(f"\n   LEFT dimension:")
+    if delta_v1_L_V_true != 0:
+        if hdi_success_L and bf_success_L:
+            print(f"      ✅ HDI and BF both confirm PS violation (True positive)")
+        elif hdi_success_L or bf_success_L:
+            print(f"      ✓ Partial evidence for PS violation (check details)")
+        else:
+            print(f"      ❌ Failed to detect PS violation (False negative)")
     else:
-        print(f"   ⚠️  delta_L: Detection uncertain, check HDI")
+        if hdi_success_L and bf_success_L:
+            print(f"      ✅ HDI and BF both confirm PS holds (True negative)")
+        elif hdi_success_L or bf_success_L:
+            print(f"      ✓ Partial evidence PS holds (check details)")
+        else:
+            print(f"      ❌ Incorrectly detected PS violation (False positive)")
 
-    if success_R and not hdi_R_contains_zero:
-        print(f"   ✅ delta_R: Model correctly detected PS violation in Right dimension")
-    elif success_R and hdi_R_contains_zero:
-        print(f"   ✅ delta_R: Model correctly accepted PS in Right dimension")
+    print(f"\n   RIGHT dimension:")
+    if delta_v1_R_H_true != 0:
+        if hdi_success_R and bf_success_R:
+            print(f"      ✅ HDI and BF both confirm PS violation (True positive)")
+        elif hdi_success_R or bf_success_R:
+            print(f"      ✓ Partial evidence for PS violation (check details)")
+        else:
+            print(f"      ❌ Failed to detect PS violation (False negative)")
     else:
-        print(f"   ⚠️  delta_R: Detection uncertain, check HDI")
+        if hdi_success_R and bf_success_R:
+            print(f"      ✅ HDI and BF both confirm PS holds (True negative)")
+        elif hdi_success_R or bf_success_R:
+            print(f"      ✓ Partial evidence PS holds (check details)")
+        else:
+            print(f"      ❌ Incorrectly detected PS violation (False positive)")
     print("="*70)
