@@ -37,16 +37,9 @@ import os  # For file size check when saving .nc
 warnings.filterwarnings('ignore')
 
 print("=" * 70)
-print("Model 1: PS (8 params) - Perceptual Separability")
+print("Model 2: NO PS (16 params) - Perceptual Separability Violation")
 print("=" * 70)
-print("Key improvements:")
-print("  1. n_points: 60 → 100 (balanced speed/accuracy, error <2%)")
-print("  2. lower bound: 0.01 → 0.001 (further reduce truncation bias)")
-print("  3. REALISTIC PARAMETERS:")
-print("     - v_correct: 3.0 → 1.5, v_error: 1.0 → 0.8")
-print("     - b: 1.0 → 1.5, t0: 0.2 → 0.25")
-print("     - Expected: Accuracy 70-85%, RT 0.7-1.3 sec")
-print("  4. SYNCED WITH MODEL2: Same n_points, draws, tune settings")
+
 print("=" * 70)
 
 # ============================================================================
@@ -501,7 +494,7 @@ def lba_2dim_likelihood(choice, rt, condition, v_left, v_right, A, b, t0, s=1.0)
     t0 : float
         Non-decision time (fixed value for all choices)
     s : float
-        Within-trial variability (fixed at 1.0)
+        Between-trial drift rate variability (standard deviation of N(v, s) distribution)
 
     Returns:
     --------
@@ -579,7 +572,7 @@ def grt_lba_4choice_logp_numpy(choice, rt, condition, v_tensor, A, b, t0, s=1.0)
     t0 : float
         Non-decision time (fixed value)
     s : float
-        Within-trial variability (fixed at 1.0)
+        Between-trial drift rate variability (standard deviation of N(v, s) distribution)
 
     Returns:
     --------
@@ -633,7 +626,7 @@ def lba_2dim_random(n_trials_per_condition, v_tensor, A, b, t0, s=1.0, rng=None)
     t0 : float
         Non-decision time for each choice (button-specific motor time)
     s : float
-        Within-trial variability (fixed at 1.0)
+        Between-trial drift rate variability (standard deviation of N(v, s) distribution)
 
     Returns:
     --------
@@ -656,11 +649,12 @@ def lba_2dim_random(n_trials_per_condition, v_tensor, A, b, t0, s=1.0, rng=None)
             # Left dimension decision
             k1_L = rng.uniform(0, A)
             k2_L = rng.uniform(0, A)
-            # FIX: Remove across-trial variability - use fixed drift rates
-            v1_L_trial = v_left[0]  # Fixed drift rate (within-trial variability handled by LBA formula)
-            v2_L_trial = v_left[1]
-            t1_L = (b - k1_L) / v1_L_trial if v1_L_trial > 0 else np.inf
-            t2_L = (b - k2_L) / v2_L_trial if v2_L_trial > 0 else np.inf
+            # Between-trial drift rate variability: sample from Normal(v_mean, s)
+            # Standard LBA: drift rates vary across trials according to N(v, s)
+            v1_L_trial = max(0.01, rng.normal(v_left[0], s))  # Ensure positive
+            v2_L_trial = max(0.01, rng.normal(v_left[1], s))
+            t1_L = (b - k1_L) / v1_L_trial
+            t2_L = (b - k2_L) / v2_L_trial
 
             # Left judgment: 0=H (if v1 wins), 1=V (if v2 wins)
             if t1_L < t2_L:
@@ -671,11 +665,11 @@ def lba_2dim_random(n_trials_per_condition, v_tensor, A, b, t0, s=1.0, rng=None)
             # Right dimension decision
             k1_R = rng.uniform(0, A)
             k2_R = rng.uniform(0, A)
-            # FIX: Remove across-trial variability - use fixed drift rates
-            v1_R_trial = v_right[0]  # Fixed drift rate
-            v2_R_trial = v_right[1]
-            t1_R = (b - k1_R) / v1_R_trial if v1_R_trial > 0 else np.inf
-            t2_R = (b - k2_R) / v2_R_trial if v2_R_trial > 0 else np.inf
+            # Between-trial drift rate variability
+            v1_R_trial = max(0.01, rng.normal(v_right[0], s))
+            v2_R_trial = max(0.01, rng.normal(v_right[1], s))
+            t1_R = (b - k1_R) / v1_R_trial
+            t2_R = (b - k2_R) / v2_R_trial
 
             # Right judgment: 0=H (if v1 wins), 1=V (if v2 wins)
             if t1_R < t2_R:
@@ -878,7 +872,7 @@ def run_map_estimation_16param(model, initvals, data, run_id, maxeval=10000):
                    map_est['v2_L_H_when_VH'] + map_est['v2_R_V_when_VH'] +
                    map_est['v2_L_H_when_VV'] + map_est['v2_R_H_when_VV']
 ) / 8
-
+#pass to result dict
     result = {
         'run_id': run_id,
         'map': map_est.copy(),
@@ -999,7 +993,9 @@ def create_grt_lba_4choice_model(observed_data):
         # LBA framework parameters (shared across all choices) - FIXED VALUES - REALISTIC VERSION
         A = 0.5  # Starting point variability (shared) - FIXED
         b = 1.5  # Threshold (shared) - FIXED - REALISTIC (increased from 1.0)
-        s = 1.0  # Fixed, not estimated (standardize within-trial variability)
+        # Fixed drift rate variability (standard LBA scaling parameter)
+        # Between-trial drift rates are sampled from N(v, s=1.0) in simulation
+        s = 1.0  # FIXED - standard LBA scaling parameter
 
         # Choice-specific non-decision time (motor response time for each button) - FIXED VALUES
         # Using the true values from simulation - REALISTIC VERSION
@@ -1218,38 +1214,47 @@ if __name__ == "__main__":
 
     # 4. Run multiple MAP estimations to find best starting point
     print("\n4. Run multiple MAP estimations (避免局部最優):")
-    best_map, all_map_results, map_consistency = run_multiple_map_16param(
-        model=model,
-        data=data,
-        n_runs=2,
-        solution_hint='high_correct'
-    )
 
-    # Use best MAP as initial values for MCMC
-    map_initvals = best_map['map']
-    print("\n   將使用最佳 MAP 解作為 MCMC 的初始值:")
+    # 4. SKIP MAP - Use simple initial values (完整版本，跳過 MAP)
+    print("\n4. SKIP MAP estimation (直接使用初始值):")
+    print("   使用真實參數值作為初始值（最優情況）")
+    
+    # Use TRUE values as initial values (best case scenario)
+    map_initvals = {
+        'v1_L_H_when_HV': v1_L_H_when_HV_true,
+        'v2_L_V_when_HV': v2_L_V_when_HV_true,
+        'v1_L_H_when_HH': v1_L_H_when_HH_true,
+        'v2_L_V_when_HH': v2_L_V_when_HH_true,
+        'v1_L_V_when_VH': v1_L_V_when_VH_true,
+        'v2_L_H_when_VH': v2_L_H_when_VH_true,
+        'v1_L_V_when_VV': v1_L_V_when_VV_true,
+        'v2_L_H_when_VV': v2_L_H_when_VV_true,
+        'v1_R_V_when_HV': v1_R_V_when_HV_true,
+        'v2_R_H_when_HV': v2_R_H_when_HV_true,
+        'v1_R_H_when_HH': v1_R_H_when_HH_true,
+        'v2_R_V_when_HH': v2_R_V_when_HH_true,
+        'v1_R_H_when_VH': v1_R_H_when_VH_true,
+        'v2_R_V_when_VH': v2_R_V_when_VH_true,
+        'v1_R_V_when_VV': v1_R_V_when_VV_true,
+        'v2_R_H_when_VV': v2_R_H_when_VV_true
+    }
+
+    print("   初始值（使用真實參數值）:")
     print(f"   v1_L_H_when_HV = {map_initvals['v1_L_H_when_HV']:.3f}, v2_L_V_when_HV = {map_initvals['v2_L_V_when_HV']:.3f}")
     print(f"   v1_L_H_when_HH = {map_initvals['v1_L_H_when_HH']:.3f}, v2_L_V_when_HH = {map_initvals['v2_L_V_when_HH']:.3f}")
-    print(f"   v1_L_V_when_VH = {map_initvals['v1_L_V_when_VH']:.3f}, v2_L_H_when_VH = {map_initvals['v2_L_H_when_VH']:.3f}")
-    print(f"   v1_L_V_when_VV = {map_initvals['v1_L_V_when_VV']:.3f}, v2_L_H_when_VV = {map_initvals['v2_L_H_when_VV']:.3f}")
-    print(f"   v1_R_V_when_HV = {map_initvals['v1_R_V_when_HV']:.3f}, v2_R_H_when_HV = {map_initvals['v2_R_H_when_HV']:.3f}")
-    print(f"   v1_R_H_when_HH = {map_initvals['v1_R_H_when_HH']:.3f}, v2_R_V_when_HH = {map_initvals['v2_R_V_when_HH']:.3f}")
-    print(f"   v1_R_H_when_VH = {map_initvals['v1_R_H_when_VH']:.3f}, v2_R_V_when_VH = {map_initvals['v2_R_V_when_VH']:.3f}")
-    print(f"   v1_R_V_when_VV = {map_initvals['v1_R_V_when_VV']:.3f}, v2_R_H_when_VV = {map_initvals['v2_R_H_when_VV']:.3f}")
-    # 5. MCMC sampling
-    print("\n5. Run MCMC sampling:")
-    print("   - draws=6000 (quick test run)")
-    print("   - tune=800 (short burn-in)")
-    print("   - chains=4 (using 4 CPU cores for parallel sampling)")
+    print(f"   (所有參數: v1=1.8, v2=1.5)")
+    print(f"   (s is FIXED at 1.0 - standard LBA scaling parameter)")
+
+    # 5. MCMC sampling - FULL VERSION (NO MAP)
+    print("\n5. Run MCMC sampling (完整版本 - 無 MAP):")
+    print("   - draws=40000 (完整版)")
+    print("   - tune=40000 (完整 burn-in)")
+    print("   - chains=8")
     print("   - sampler: DEMetropolisZ")
-    print("   - Estimating 8 drift rate parameters (A, b, t0, s are fixed)")
-    print("   - Using Paper Equation 1 & 2 (complete PDF/CDF definitions)")
-    print("   - initvals: 使用最佳 MAP 解")
-    print("   Estimated time: ~15-30 minutes")
-    print("\n   Starting sampling...")
+    print("   - Estimating 16 drift rate parameters (A, b, t0, s are all FIXED)")
 
     with model:
-        # Sample only the 16 basic drift rate parameters (A, b, t0, s are all fixed)
+        # Sample only the 16 drift rate parameters (s is fixed at 1.0)
         vars_to_sample = [
                 model.v1_L_H_when_HV, model.v2_L_V_when_HV,
                 model.v1_L_H_when_HH, model.v2_L_V_when_HH,
@@ -1266,15 +1271,16 @@ if __name__ == "__main__":
         # Use trapezoidal integration for better accuracy
         _CDF_MODE['use_fast'] = False
 
+        # Use DEMetropolisZ for all parameters (can capture correlations between s and v)
         trace = pm.sample(
-            draws=6000,     # Quick test run
-            tune=1000,       # Short burn-in period
-            chains=8,        # Using 8 chains for better convergence diagnostics
+            draws=40000,     # FULL VERSION
+            tune=40000,      # FULL VERSION
+            chains=8,       # FULL VERSION
             step=pm.DEMetropolisZ(vars_to_sample),
-            initvals=map_initvals,  # Use best MAP solution as starting point
+            initvals=map_initvals,
             return_inferencedata=True,
             progressbar=True,
-            cores=8         # Using 8 CPU cores for parallel sampling
+            cores=12
         )
 
     print("\n   ✓ MCMC sampling completed!")
@@ -1339,19 +1345,19 @@ if __name__ == "__main__":
         diff = post_val - true_val
         print(f"      {param_name:15s}: True={true_val:.2f}, Posterior={post_val:.3f}, Diff={diff:+.3f}")
 
-    print("\n   LBA parameters (all FIXED, not estimated) - REALISTIC VERSION:")
+    print("\n   LBA parameters - REALISTIC VERSION:")
     print(f"      A: Fixed at 0.5")
     print(f"      b: Fixed at 1.5 (REALISTIC, was 1.0)")
     print(f"      t0: Fixed at 0.25 (REALISTIC, was 0.2)")
-    print(f"      s: Fixed at 1.0")
+    print(f"      s: Fixed at 1.0 (standard LBA scaling parameter)")
 
     # 8. Save trace to NetCDF
     print("\n8. Save posterior trace to NetCDF:")
-    output_file = "model2_noPS_trace.nc"
+    output_file = "model2_noPS_trace_ESTIMATE_S.nc"
     trace.to_netcdf(output_file)
     print(f"   ✓ Trace saved to: {output_file}")
     print(f"   File size: {os.path.getsize(output_file) / 1024:.1f} KB")
 
     print("\n" + "="*70)
-    print("✓ Model 2: PS (16 params) - Violate Perceptual Separability completed!")
+    print("✓ Model 2 (NO MAP): 完整版本完成！")
     print("="*70)
