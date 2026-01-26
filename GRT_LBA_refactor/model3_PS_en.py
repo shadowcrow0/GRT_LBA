@@ -319,9 +319,9 @@ def build_model(observed_data):
         # 4-parameter reparameterization
         vt = pm.HalfNormal("vt", sigma=2.0)
         vb = pm.Beta("vb", 2, 2)
-        v_m = pm.Deterministic("v_match", vt * vb)
+        v_m = pm.Deterministic("v_match", vt * vb) #vt=5 vb<5
         v_ms = pm.Deterministic("v_mismatch", vt * (1 - vb))
-
+#vb->match% 1-vb->mismatch%
         v_tensor = pt.zeros((4, 2, 2))
         # Accumulator index: 0=H(|), 1=V(/)
         # Condition 0: VH (L=V, R=H) -> L:[v_ms, v_m], R:[v_m, v_ms]
@@ -403,13 +403,18 @@ if __name__ == "__main__":
     # Construct a v_tensor with "no PS pattern"
     # condition: 0=VH, 1=HH, 2=HV, 3=VV
     # accumulator: 0=H(|), 1=V(/)
-    v_tensor = np.array([
-        [[v_ms_random[0], v_m_random[0]], [v_m_random[0], v_ms_random[0]]],  # VH: L sees V, R sees H
+    v_tensor_PS = np.array([
+        [[v_ms_random[2], v_m_random[2]], [v_m_random[0], v_ms_random[0]]],  # VH: L sees V, R sees H
+        [[v_m_random[0], v_ms_random[0]], [v_m_random[0], v_ms_random[0]]],  # HH: L sees H, R sees H
+        [[v_m_random[0], v_ms_random[0]], [v_ms_random[2], v_m_random[2]]],  # HV: L sees H, R sees V
+        [[v_ms_random[2], v_m_random[2]], [v_ms_random[2], v_m_random[2]]]   # VV: L sees V, R sees V
+    ])
+    v_tensor_noPS = np.array([
+        [[v_ms_random[2], v_m_random[2]], [v_m_random[2], v_ms_random[2]]],  # VH: L sees V, R sees H
         [[v_m_random[1], v_ms_random[1]], [v_m_random[1], v_ms_random[1]]],  # HH: L sees H, R sees H
         [[v_m_random[2], v_ms_random[2]], [v_ms_random[2], v_m_random[2]]],  # HV: L sees H, R sees V
-        [[v_ms_random[3], v_m_random[3]], [v_ms_random[3], v_m_random[3]]]   # VV: L sees V, R sees V
+        [[v_ms_random[0], v_m_random[0]], [v_ms_random[0], v_m_random[0]]]   # VV: L sees V, R sees V
     ])
-
     # Generate data
     data = lba_2dim_random(
         n_trials_per_condition=5000 // 4,
