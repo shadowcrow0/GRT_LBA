@@ -177,36 +177,36 @@ def extract_trial_drift_rates_noPS(v_match_per_cond, v_mismatch_per_cond, data):
     # Prepare results
     results = []
 
-    # Condition labels: 0=SD, 1=DD, 2=DS, 3=SS
-    cond_labels = {0: 'SD(/|)', 1: 'DD(||)', 2: 'DS(|/)', 3: 'SS(//)'}
-    choice_labels = {0: 'SD', 1: 'DD', 2: 'DS', 3: 'SS'}
+    # Condition labels: 0=DS, 1=SS, 2=SD, 3=DD
+    cond_labels = {0: 'DS(/|)', 1: 'SS(||)', 2: 'SD(|/)', 3: 'DD(//)'}
+    choice_labels = {0: 'DS', 1: 'SS', 2: 'SD', 3: 'DD'}
 
     # Drift rate configuration for each condition (condition-specific)
     # v_tensor[cond, dimension, accumulator]
     # dimension: 0=Left, 1=Right
-    # accumulator: 0=judge D(|), 1=judge S(/)
+    # accumulator: 0=judge D(/), 1=judge S(|)
     drift_configs = {
-        0: {  # SD: Left sees S(/), Right sees D(|)
-            'left_stim': 'S(/)',
-            'right_stim': 'D(|)',
+        0: {  # DS: Left sees D(/), Right sees S(|)
+            'left_stim': 'D(/)',
+            'right_stim': 'S(|)',
             'left_drift': [v_mismatch_per_cond[0], v_match_per_cond[0]],  # [judge D, judge S]
             'right_drift': [v_match_per_cond[0], v_mismatch_per_cond[0]]
         },
-        1: {  # DD: Left sees D(|), Right sees D(|)
-            'left_stim': 'D(|)',
-            'right_stim': 'D(|)',
+        1: {  # SS: Left sees S(|), Right sees S(|)
+            'left_stim': 'S(|)',
+            'right_stim': 'S(|)',
             'left_drift': [v_match_per_cond[1], v_mismatch_per_cond[1]],
             'right_drift': [v_match_per_cond[1], v_mismatch_per_cond[1]]
         },
-        2: {  # DS: Left sees D(|), Right sees S(/)
-            'left_stim': 'D(|)',
-            'right_stim': 'S(/)',
+        2: {  # SD: Left sees S(|), Right sees D(/)
+            'left_stim': 'S(|)',
+            'right_stim': 'D(/)',
             'left_drift': [v_match_per_cond[2], v_mismatch_per_cond[2]],
             'right_drift': [v_mismatch_per_cond[2], v_match_per_cond[2]]
         },
-        3: {  # SS: Left sees S(/), Right sees S(/)
-            'left_stim': 'S(/)',
-            'right_stim': 'S(/)',
+        3: {  # DD: Left sees D(/), Right sees D(/)
+            'left_stim': 'D(/)',
+            'right_stim': 'D(/)',
             'left_drift': [v_mismatch_per_cond[3], v_match_per_cond[3]],
             'right_drift': [v_mismatch_per_cond[3], v_match_per_cond[3]]
         }
@@ -218,9 +218,9 @@ def extract_trial_drift_rates_noPS(v_match_per_cond, v_mismatch_per_cond, data):
         ch = choice[i]
         config = drift_configs[c]
 
-        # Parse choice: 0=SD, 1=DD, 2=DS, 3=SS
-        # Left judgment: 0=D(|), 1=S(/)
-        # Right judgment: 0=D(|), 1=S(/)
+        # Parse choice: 0=DS, 1=SS, 2=SD, 3=DD
+        # Left judgment: 0=D(/), 1=S(|)
+        # Right judgment: 0=D(/), 1=S(|)
         choice_map = {0: (1, 0), 1: (0, 0), 2: (0, 1), 3: (1, 1)}
         left_judgment, right_judgment = choice_map[ch]
 
@@ -262,10 +262,10 @@ def display_data_summary(data, v_tensor):
     Display comprehensive summary statistics for the generated data
 
     Naming Convention:
-        Cond 0: SD (Same/Different - /|)
-        Cond 1: DD (Different/Different - ||)
-        Cond 2: DS (Different/Same - |/)
-        Cond 3: SS (Same/Same - //)
+        Cond 0: DS (Diagonal/Straight - /|)
+        Cond 1: SS (Straight/Straight - ||)
+        Cond 2: SD (Straight/Diagonal - |/)
+        Cond 3: DD (Diagonal/Diagonal - //)
 
     Parameters:
     -----------
@@ -284,9 +284,9 @@ def display_data_summary(data, v_tensor):
     choice = data[:, 1].astype(int)
     cond = data[:, 2].astype(int)
 
-    # Condition labels: 0=SD, 1=DD, 2=DS, 3=SS
-    cond_labels = {0: 'SD(/|)', 1: 'DD(||)', 2: 'DS(|/)', 3: 'SS(//)'}
-    choice_labels = {0: 'SD', 1: 'DD', 2: 'DS', 3: 'SS'}
+    # Condition labels: 0=DS, 1=SS, 2=SD, 3=DD
+    cond_labels = {0: 'DS(/|)', 1: 'SS(||)', 2: 'SD(|/)', 3: 'DD(//)'}
+    choice_labels = {0: 'DS', 1: 'SS', 2: 'SD', 3: 'DD'}
 
     print(f"\nTotal data points: {len(data)}", flush=True)
 
@@ -294,7 +294,7 @@ def display_data_summary(data, v_tensor):
     print("\nDrift Rate Settings for Each Condition:", flush=True)
     print("(Drift rate tensor structure: [condition, dimension, accumulator])", flush=True)
     print("  dimension: 0=Left, 1=Right", flush=True)
-    print("  accumulator: 0=judge D(|), 1=judge S(/)", flush=True)
+    print("  accumulator: 0=judge D(/), 1=judge S(|)", flush=True)
 
     drift_configs = v_tensor.tolist()
     for c in range(4):
@@ -328,9 +328,9 @@ def display_data_summary(data, v_tensor):
     correct_counts = []
     for c in range(4):
         mask = cond == c
-        # Based on condition mapping, dominant choice should be: SD→SD, DD→DD, DS→DS, SS→SS
-        # condition: 0=SD, 1=DD, 2=DS, 3=SS
-        # choice: 0=SD, 1=DD, 2=DS, 3=SS
+        # Based on condition mapping, dominant choice should be: DS→DS, SS→SS, SD→SD, DD→DD
+        # condition: 0=DS, 1=SS, 2=SD, 3=DD
+        # choice: 0=DS, 1=SS, 2=SD, 3=DD
         # Therefore it's identity mapping (verified through testing)
         dominant_choice_map = {0: 0, 1: 1, 2: 2, 3: 3}  # cond -> expected choice
         expected = dominant_choice_map[c]
@@ -381,9 +381,9 @@ def analyze_and_save_results( trace_noPS, data_noPS,
     """
     import datetime
 
-    # Condition mapping: 0=SD(/|), 1=DD(||), 2=DS(|/), 3=SS(//)
-    COND_MAP = {0: 'SD', 1: 'DD', 2: 'DS', 3: 'SS'}
-    COND_LABELS = ['SD(/|)', 'DD(||)', 'DS(|/)', 'SS(//)']
+    # Condition mapping: 0=DS(/|), 1=SS(||), 2=SD(|/), 3=DD(//)
+    COND_MAP = {0: 'DS', 1: 'SS', 2: 'SD', 3: 'DD'}
+    COND_LABELS = ['DS(/|)', 'SS(||)', 'SD(|/)', 'DD(//)']
 
     # Open log file
     with open(log_file, 'w') as f:
