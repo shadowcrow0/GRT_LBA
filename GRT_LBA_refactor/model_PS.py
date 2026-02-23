@@ -222,13 +222,13 @@ def build_model_PS(observed_data, tune=10000, draws=6000, chains=12):
         t0 = 0.1  # Fixed non-decision time
 
         # --- PS 模型：依刺激維度分離 (D vs S) ---
-        # D 刺激維度 (Different/斜線/)
+        # D 刺激維度 (Diagonal/斜線/)
         vt_D = pm.TruncatedNormal("vt_D", mu=3.0, sigma=1.0, lower=0.1, upper=8.0)
         vb_D = pm.Beta("vb_D", 2, 2)
         v_D_match = pm.Deterministic("v_D_match", vt_D * vb_D)        # D(/) stim → D resp (correct)
         v_D_mismatch = pm.Deterministic("v_D_mismatch", vt_D * (1 - vb_D))  # D(/) stim → S resp (error)
 
-        # S 刺激維度 (Same/垂直|)
+        # S 刺激維度 (Straight/垂直|)
         vt_S = pm.TruncatedNormal("vt_S", mu=3.0, sigma=1.0, lower=0.1, upper=8.0)
         vb_S = pm.Beta("vb_S", 2, 2)
         v_S_match = pm.Deterministic("v_S_match", vt_S * vb_S)        # S(|) stim → S resp (correct)
